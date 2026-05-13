@@ -55,7 +55,7 @@ on:
         type: string
         description: "Custom kernel suffix (leave empty to use a random string)"
         required: false
-        default: "5-ga5f232d1ead0-ab14083253-4k"
+        default: "5-gb2a876902b49-ab14541642-4k"
 
       SUBLEVEL:
         type: string
