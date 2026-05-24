@@ -136,9 +136,10 @@ jobs:
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 15G
-      CCACHE_COMPILERCHECK: "content"
+      # NOTE: CCACHE_COMPILERCHECK and CCACHE_SLOPPINESS are intentionally NOT set
+      # here as env: — they are set via ccache --set-config in Initialize Ccache
+      # to avoid YAML interpolation issues with special characters.
       CCACHE_NOHASHDIR: "true"
-      CCACHE_SLOPPINESS: "include_file_mtime,include_file_ctime,time_macros,file_macro,system_headers"
       CCACHE_BASEDIR: ${{ github.workspace }}/kernel_workspace
 
       BAZEL_CACHE_DIR: ${{ github.workspace }}/.bazel-cache
@@ -206,7 +207,6 @@ jobs:
             echo "DEVICE_NAME_SAFE=$DEVICE_NAME_SAFE"
           } >> "$GITHUB_ENV"
 
-          # Also expose as step outputs for cross-step references
           {
             echo "DEVICE_NAME=$DEVICE_NAME"
             echo "DEVICE_CODENAME=$DEVICE_CODENAME"
@@ -398,11 +398,30 @@ jobs:
           git config --global user.email "OnePlus@qq.com"
           git config --global advice.detachedHead false
 
+      # ─────────────────────────────────────────────────────────────────────────
+      # CACHE STRATEGY
+      #
+      # This workflow targets android16-6.12 which uses Bazel/Kleaf exclusively.
+      # Bazel runs actions inside a hermetic sandbox — ccache cannot see its own
+      # cache directory from inside that sandbox, so every call is a miss and
+      # adds pure overhead.
+      #
+      # Strategy:
+      #   • Bazel path  → Bazel disk_cache only  (persisted via actions/cache)
+      #   • Legacy path → ccache only             (properly configured)
+      #   • Never both at the same time
+      #
+      # The build step auto-detects which path is active and applies the right
+      # caching mechanism accordingly.
+      # ─────────────────────────────────────────────────────────────────────────
+
       - name: Restore Ccache
         if: ${{ !inputs.BUILD_NOCCACHE }}
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
+          # Hash includes defconfig patterns so cache is invalidated when kernel
+          # config changes (avoids stale-config hits that produce wrong binaries)
           key: ccache-${{ runner.os }}-${{ steps.device_config.outputs.KERNEL_BRANCH }}-${{ inputs.KSU_SETUP_BRANCH }}-${{ hashFiles('.github/workflows/*.yml') }}
           restore-keys: |
             ccache-${{ runner.os }}-${{ steps.device_config.outputs.KERNEL_BRANCH }}-${{ inputs.KSU_SETUP_BRANCH }}-
@@ -417,17 +436,36 @@ jobs:
 
           mkdir -p "$CCACHE_DIR" "${RUNNER_TEMP}/ccache-tmp"
 
+          # CCACHE_BASEDIR must match the exact root of kernel sources so that
+          # ccache rewrites absolute paths to relative ones → cross-run cache hits.
+          KERNEL_SRC_ROOT="${GITHUB_WORKSPACE}/kernel_workspace"
+
           ccache --set-config=max_size="${CCACHE_MAXSIZE}"
+          ccache --set-config=base_dir="${KERNEL_SRC_ROOT}"
           ccache --set-config=compression=true
-          ccache --set-config=compression_level=6
+          # Level 1 = fastest compression — good balance for CI (level 6 adds ~30s overhead)
+          ccache --set-config=compression_level=1
           ccache --set-config=temporary_dir="${RUNNER_TEMP}/ccache-tmp"
           ccache --set-config=hash_dir=false
-          ccache --set-config=compiler_check="content"
-          ccache --set-config=sloppiness=include_file_mtime,include_file_ctime,time_macros,file_macro,system_headers
+          # 'content' hashes the compiler binary itself — more reliable than
+          # version strings which can collide across toolchain rebuilds
+          ccache --set-config=compiler_check=content
+          # Prevent cache misses caused by:
+          #   include_file_mtime/ctime : file timestamps differ between runs
+          #   time_macros              : __DATE__ / __TIME__ in source
+          #   file_macro               : __FILE__ absolute path differences
+          #   system_headers           : /usr/include changes between apt updates
+          #   pch_defines              : precompiled header define variations
+          ccache --set-config=sloppiness=include_file_mtime,include_file_ctime,time_macros,file_macro,system_headers,pch_defines
+          # run_second_cpp=true: run preprocessor twice to get better cache hits
+          # on files with conditional macros (common in kernel headers)
+          ccache --set-config=run_second_cpp=true
 
-          ccache -z
+          ccache --zero-stats
+          echo "📊 Ccache config:"
+          ccache --show-config
           echo "📊 Ccache initial stats:"
-          ccache -s || true
+          ccache -s
 
       - name: Restore Bazel Cache
         uses: actions/cache@v4
@@ -640,8 +678,6 @@ jobs:
               ;;
           esac
 
-          echo "✅ Manager: ${{ inputs.MANAGER_SOURCE }} → artifact: $(grep manager_artifact $GITHUB_OUTPUT | cut -d= -f2 || true)"
-
       - name: Add ReSukiSU
         shell: bash
         run: |
@@ -813,7 +849,6 @@ jobs:
 
           cd kernel_workspace/common
 
-          # Download and verify setup script before executing
           BBG_SETUP_URL="https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh"
           curl -fL --proto '=https' --tlsv1.2 -o /tmp/bbg_setup.sh "$BBG_SETUP_URL"
 
@@ -825,7 +860,6 @@ jobs:
             exit 1
           }
 
-          # Register BBG in LSM default chain if not already present
           if ! grep -q 'baseband_guard' ./security/Kconfig; then
             sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' \
               ./security/Kconfig
@@ -1038,58 +1072,90 @@ jobs:
           echo "🚀 Starting kernel build at $(date)"
           echo "🔧 CPU cores: ${NPROC} | Build threads: ${BUILD_THREADS}"
 
-          if [ "${BUILD_NOCCACHE_ENABLED}" != "1" ]; then
-            echo "⚡ Enabling ccache"
+          # ── Detect build system ───────────────────────────────────────────────
+          USE_BAZEL=false
+          [ ! -f "build/build.sh" ] && USE_BAZEL=true
+          echo "🏗️  Build system: $( [ "$USE_BAZEL" = "true" ] && echo 'Bazel/Kleaf' || echo 'legacy build.sh' )"
+
+          # ── Cache strategy ────────────────────────────────────────────────────
+          # Bazel path  → Bazel disk_cache only (ccache is incompatible with
+          #               Bazel's hermetic sandbox and produces 100% misses)
+          # Legacy path → ccache only (properly configured above)
+          USE_CCACHE=0
+          CCACHE_EXEC=""
+
+          if [ "${BUILD_NOCCACHE_ENABLED}" != "1" ] && [ "$USE_BAZEL" = "false" ]; then
+            echo "⚡ Cache: ccache (legacy build path)"
+
+            USE_CCACHE=1
+            CCACHE_EXEC="$(command -v ccache)"
 
             export PATH="/usr/lib/ccache:$PATH"
             export USE_CCACHE=1
-            export CCACHE_EXEC="$(command -v ccache)"
+            export CCACHE_EXEC="${CCACHE_EXEC}"
+            # BASEDIR must be the exact kernel source root so ccache rewrites
+            # absolute paths → relative → cross-run cache hits
+            export CCACHE_BASEDIR="${ROOT}"
             export CCACHE_DIR="${CCACHE_DIR}"
-            export CCACHE_BASEDIR="${GITHUB_WORKSPACE}/kernel_workspace"
             export CCACHE_NOHASHDIR=true
-            export CCACHE_COMPILERCHECK="content"
-            export CCACHE_SLOPPINESS="include_file_mtime,include_file_ctime,time_macros,file_macro,system_headers"
-            export CC="ccache clang"
-            export CXX="ccache clang++"
-            export HOSTCC="ccache clang"
-            export HOSTCXX="ccache clang++"
+            export CCACHE_COMPILERCHECK=content
+            export CCACHE_SLOPPINESS="include_file_mtime,include_file_ctime,time_macros,file_macro,system_headers,pch_defines"
 
-            ccache -s || true
+            # Use absolute clang path to prevent recursive ccache wrapper calls
+            CLANG_BIN="$(command -v clang)"
+            export CC="ccache ${CLANG_BIN}"
+            export CXX="ccache $(command -v clang++)"
+            export HOSTCC="ccache ${CLANG_BIN}"
+            export HOSTCXX="ccache $(command -v clang++)"
+
+            echo "📊 Ccache pre-build stats:"
+            ccache -s
+
+          elif [ "${BUILD_NOCCACHE_ENABLED}" != "1" ] && [ "$USE_BAZEL" = "true" ]; then
+            echo "⚡ Cache: Bazel disk_cache only"
+            echo "   (ccache skipped — incompatible with Bazel hermetic sandbox)"
+
           else
-            echo "🧹 ccache disabled (BUILD_NOCCACHE=true)"
+            echo "🧹 Cache: disabled (BUILD_NOCCACHE=true)"
           fi
 
           mkdir -p "${BAZEL_CACHE_DIR}/repository" "${BAZELISK_HOME}"
           export BAZELISK_HOME="${BAZELISK_HOME}"
 
-          if [ -f "build/build.sh" ]; then
-            echo "🏗️ Build path: build/build.sh (legacy)"
-
+          # ── Legacy build path ─────────────────────────────────────────────────
+          if [ "$USE_BAZEL" = "false" ]; then
             time env \
               LTO=none \
               BUILD_CONFIG=common/build.config.gki.aarch64 \
-              USE_CCACHE="${USE_CCACHE:-0}" \
-              CCACHE_EXEC="${CCACHE_EXEC:-}" \
-              CCACHE_DIR="${CCACHE_DIR:-}" \
-              CCACHE_BASEDIR="${CCACHE_BASEDIR:-}" \
+              USE_CCACHE="${USE_CCACHE}" \
+              CCACHE_EXEC="${CCACHE_EXEC}" \
+              CCACHE_DIR="${CCACHE_DIR}" \
+              CCACHE_BASEDIR="${ROOT}" \
+              CCACHE_NOHASHDIR=true \
+              CCACHE_COMPILERCHECK=content \
+              CCACHE_SLOPPINESS="include_file_mtime,include_file_ctime,time_macros,file_macro,system_headers,pch_defines" \
               build/build.sh 2>&1 | tee "$ROOT/build.log"
-          else
-            echo "🏗️ Build path: Bazel/Kleaf"
 
+          # ── Bazel/Kleaf path ──────────────────────────────────────────────────
+          else
+            # Bazel tuning for GitHub Actions runners:
+            #   --config=fast            : disables slow analysis features            
+            #   --disk_cache             : persisted cross-run via actions/cache
+            #   --repository_cache       : caches external deps (Bazelisk, toolchain)
+            #   --experimental_repository_cache_hardlinks : saves disk I/O on restore
+            #   --experimental_reuse_sandbox_directories  : avoids recreating sandboxes
+            #     for unchanged actions — significant speedup on repeat builds
+            #   --ui_event_filters       : reduces log noise
             BAZEL_ARGS=(
-              --config=fast
-              --lto=none
+              --config=fast              
               --jobs="${BUILD_THREADS}"
               --disk_cache="${BAZEL_CACHE_DIR}"
               --repository_cache="${BAZEL_CACHE_DIR}/repository"
               --experimental_repository_cache_hardlinks
-              --action_env=USE_CCACHE="${USE_CCACHE:-0}"
-              --action_env=CCACHE_EXEC="${CCACHE_EXEC:-}"
-              --action_env=CCACHE_DIR="${CCACHE_DIR:-}"
-              --action_env=CCACHE_BASEDIR="${CCACHE_BASEDIR:-}"
-              --action_env=CCACHE_NOHASHDIR="${CCACHE_NOHASHDIR:-true}"
-              --action_env=CCACHE_COMPILERCHECK="content"
-              --action_env=CCACHE_SLOPPINESS="${CCACHE_SLOPPINESS:-include_file_mtime,include_file_ctime,time_macros,file_macro,system_headers}"
+              --experimental_reuse_sandbox_directories
+              --ui_event_filters=-DEBUG
+              --noshow_progress
+              --show_result=0
             )
 
             time tools/bazel build \
@@ -1099,9 +1165,10 @@ jobs:
 
           echo "✅ Kernel build completed at $(date)"
 
-          if [ "${BUILD_NOCCACHE_ENABLED}" != "1" ]; then
-            echo "📊 Ccache stats post-build:"
-            ccache -s || true
+          # Post-build ccache stats (legacy path only)
+          if [ "${USE_CCACHE}" = "1" ]; then
+            echo "📊 Ccache post-build stats:"
+            ccache -s
           fi
 
       - name: Capture Ccache Stats
@@ -1110,13 +1177,26 @@ jobs:
         run: |
           set +e
 
-          ccache -s || true
+          # ccache stats are only meaningful for the legacy build.sh path.
+          # On Bazel builds, report N/A with an explanation.
+          if [ -f "kernel_workspace/build/build.sh" ]; then
+            ccache -s || true
+            HIT_RATE="$(ccache -s | grep -i "hit rate" | awk '{print $NF}' | head -1 || echo "N/A")"
+            CACHEABLE="$(ccache -s | awk '/Cacheable calls:/ {print $3}' | head -1 || echo "0")"
+            CACHE_SIZE="$(ccache -s | awk '/Cache size/ {print $3, $4}' | head -1 || echo "N/A")"
+          else
+            HIT_RATE="N/A (Bazel path — using Bazel disk cache)"
+            CACHEABLE="N/A"
+            CACHE_SIZE="N/A"
+          fi
 
-          HIT_RATE="$(ccache -s | grep -i "hit rate" | awk '{print $NF}' | head -1 || echo "N/A")"
-          CACHEABLE="$(ccache -s | awk '/Cacheable calls:/ {print $3}' | head -1 || echo "0")"
+          echo "CCACHE_HIT_RATE=${HIT_RATE}" >> "$GITHUB_ENV"
+          echo "CCACHE_CACHEABLE_CALLS=${CACHEABLE}" >> "$GITHUB_ENV"
+          echo "CCACHE_SIZE=${CACHE_SIZE}" >> "$GITHUB_ENV"
 
-          echo "CCACHE_HIT_RATE=${HIT_RATE:-N/A}" >> "$GITHUB_ENV"
-          echo "CCACHE_CACHEABLE_CALLS=${CACHEABLE:-0}" >> "$GITHUB_ENV"
+          echo "📊 ccache hit rate  : ${HIT_RATE}"
+          echo "📊 cacheable calls  : ${CACHEABLE}"
+          echo "📊 cache size       : ${CACHE_SIZE}"
 
       - name: Make AnyKernel3
         shell: bash
@@ -1375,6 +1455,7 @@ jobs:
           IMAGE_SIZE="${IMAGE_SIZE:-N/A}"
           CCACHE_HIT_RATE="${CCACHE_HIT_RATE:-N/A}"
           CCACHE_CACHEABLE_CALLS="${CCACHE_CACHEABLE_CALLS:-N/A}"
+          CCACHE_SIZE="${CCACHE_SIZE:-N/A}"
           SUSVER="${SUSVER:-N/A}"
           SUSFS_BRANCH_NAME="${SUSFS_BRANCH_NAME:-N/A}"
           SUSFS_COMMIT_SHA="${SUSFS_COMMIT_SHA:-N/A}"
@@ -1448,9 +1529,11 @@ jobs:
 
           | Metric | Value |
           |--------|-------|
-          | Ccache Hit Rate | ${CCACHE_HIT_RATE} |
-          | Ccache Cacheable Calls | ${CCACHE_CACHEABLE_CALLS} |
-          | Parallel Jobs | $(nproc) cores |
+          | Build system | $( [ -f kernel_workspace/build/build.sh ] && echo 'Legacy build.sh' || echo 'Bazel/Kleaf' ) |
+          | Ccache hit rate | ${CCACHE_HIT_RATE} |
+          | Ccache cacheable calls | ${CCACHE_CACHEABLE_CALLS} |
+          | Ccache cache size | ${CCACHE_SIZE} |
+          | Parallel jobs | $(nproc) cores |
 
           EOF
 
@@ -1501,7 +1584,7 @@ jobs:
             echo "   ZIP      : ${ZIP_NAME:-N/A}"
             echo "   Size     : ${ZIP_SIZE:-N/A}"
             echo "   Duration : ${BUILD_DURATION_TEXT:-N/A}"
-            echo "   Ccache   : ${CCACHE_HIT_RATE:-N/A} hit rate (${CCACHE_CACHEABLE_CALLS:-0} cacheable calls)"
+            echo "   Cache    : ${CCACHE_HIT_RATE:-N/A} hit rate (${CCACHE_CACHEABLE_CALLS:-0} cacheable calls)"
           elif [ "${{ job.status }}" = "failure" ]; then
             echo "❌ BUILD FAILED"
             echo "   Device   : ${DEVICE_NAME}"
