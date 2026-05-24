@@ -283,6 +283,230 @@ jobs:
 
           echo "Inputs validated"
 
+      - name: 📊 Build plan summary
+        shell: bash
+        env:
+          MATRIX_JSON: ${{ steps.build_plan.outputs.matrix }}
+          TARGET_GROUP: ${{ steps.build_plan.outputs.target_group }}
+          TARGET_MODEL_DISPLAY: ${{ steps.build_plan.outputs.target_model_display }}
+          TARGET_MODEL_FILTER: ${{ steps.build_plan.outputs.target_model }}
+          BUILD_TARGET_COUNT: ${{ steps.build_plan.outputs.count }}
+          ACTIVE_GKI_KEYS: ${{ steps.build_plan.outputs.active_gki_keys }}
+          ANDROID_KERNEL_KEY: ${{ steps.build_plan.outputs.android_kernel_key }}
+          KSU_RESOLVED_HASH: ${{ steps.build_plan.outputs.ksu_resolved_hash }}
+          SUSFS_BRANCH: ${{ steps.build_plan.outputs.susfs_branch }}
+          SUSFS_HASH: ${{ steps.build_plan.outputs.susfs_hash }}
+        run: |
+          set -euo pipefail
+
+          matrix_json="$MATRIX_JSON"
+          target_model_display="$TARGET_MODEL_DISPLAY"
+
+          ksu_display_lines=""
+
+          while IFS=$'\t' read -r ksu_type ksu_ref ksu_tag ksu_resolved; do
+            case "$ksu_type" in
+              KSUN)
+                ksu_label="KernelSU Next"
+                ;;
+              KSU)
+                ksu_label="KernelSU"
+                ;;
+              RSKSU)
+                ksu_label="ReSukiSU"
+                ;;
+              SUKISU)
+                ksu_label="SukiSU Ultra"
+                ;;
+              *)
+                ksu_label="$ksu_type"
+                ;;
+            esac
+
+            if [[ "$ksu_ref" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              ksu_display_lines+="- KSU Config: 📌 \`$ksu_label\`, \`$ksu_ref\`"$'\n'
+            else
+              ksu_display_lines+="- KSU Config: 🔀 \`$ksu_label\`, \`$ksu_ref\` (\`$ksu_resolved\`), tag \`$ksu_tag\`"$'\n'
+            fi
+          done < <(
+            jq -r '
+              .include
+              | unique_by(.ksu_type, .ksu_hash, .ksu_tag, .ksu_resolved_hash)[]
+              | [.ksu_type, .ksu_hash, .ksu_tag, .ksu_resolved_hash]
+              | @tsv
+            ' <<< "$matrix_json"
+          )
+
+          build_ts_input="${{ inputs.BUILD_TIME }}"
+
+          if [ "$build_ts_input" = "-1" ]; then
+            build_ts_display="❌ not modified"
+          elif [ -z "$build_ts_input" ] || [ "$build_ts_input" = "F" ] || [ "$build_ts_input" = "f" ]; then
+            build_ts_display="⏱️ auto (current UTC time)"
+          else
+            build_ts_display="📌 \`$build_ts_input\`"
+          fi
+
+          if [ "${{ inputs.SUFFIX }}" = "-1" ]; then
+            suffix_display="❌ disabled"
+          elif [ -z "${{ inputs.SUFFIX }}" ]; then
+            suffix_display="🎲 random"
+          else
+            suffix_display="📌 \`${{ inputs.SUFFIX }}\`"
+          fi
+
+          if [ -n "${{ inputs.SUBLEVEL }}" ]; then
+            sublevel_display="📌 \`${{ inputs.SUBLEVEL }}\`"
+          else
+            sublevel_display="default"
+          fi
+
+          case "${{ inputs.KPM }}" in
+            KPM)
+              kpm_display="✅ KPM"
+              ;;
+            KPN)
+              kpm_display="✅ KPN"
+              ;;
+            N/A)
+              kpm_display="❌ Disabled"
+              ;;
+            *)
+              kpm_display="\`${{ inputs.KPM }}\`"
+              ;;
+          esac
+
+          case "${{ inputs.MANAGER_SOURCE }}" in
+            MD3)
+              manager_display="📱 MD3"
+              ;;
+            MD3_SPOOF)
+              manager_display="🕶️ MD3 Spoof"
+              ;;
+            *)
+              manager_display="\`${{ inputs.MANAGER_SOURCE }}\`"
+              ;;
+          esac
+
+          {
+            echo "## 🎯 Build Plan"
+            echo ""
+            echo "| Item | Value |"
+            echo "|------|-------|"
+            echo "| **Target Group** | \`$TARGET_GROUP\` |"
+            echo "| **Target Model** | \`$target_model_display\` |"
+            echo "| **Build Targets** | \`$BUILD_TARGET_COUNT\` |"
+            echo "| **Android / Kernel** | \`$ANDROID_KERNEL_KEY\` |"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## ⚙️ Configuration"
+            echo ""
+            printf '%s' "$ksu_display_lines"
+            echo "- Manager: $manager_display"
+            echo "- KPM Mode: $kpm_display"
+            echo "- Build Timestamp: $build_ts_display"
+            echo "- Kernel Suffix: $suffix_display"
+            echo "- SUBLEVEL Spoof: $sublevel_display"
+            echo "- Optimization: \`fast / LTO none\`"
+            echo "- Clean Build/No Ccache: ${{ inputs.DISABLE_CCACHE && '✅ Yes' || '❌ No' }}"
+            echo "- Create Release: ${{ inputs.CREATE_RELEASE && '✅ Yes' || '❌ No' }}"
+            echo "- Create Debug Artifacts: ✅ Yes"
+            echo "- Disk Cleanup: ${{ !inputs.SKIP_DISK_CLEANUP && '✅ Yes' || '❌ No' }}"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## 🛡️ Feature Flags"
+            echo ""
+            echo "- Baseband Guard / BBG: ${{ inputs.BASEBAND_GUARD && '✅ Yes' || '❌ No' }}"
+            echo "- Netfilter Extensions: ${{ inputs.NETFILTER && '✅ Yes' || '❌ No' }}"
+            echo "- BBR + ECN: ${{ inputs.BBR_ECN && '✅ Yes' || '❌ No' }}"
+            echo "- Unicode Bypass Patch: ${{ inputs.UNICODE_BYPASS && '✅ Yes' || '❌ No' }}"
+            echo "- No_5uS Fix: ${{ inputs.XUS_FIX && '✅ Yes' || '❌ No' }}"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## 📦 Selected Build Matrix"
+            echo ""
+            echo "<details>"
+            echo "<summary><strong>Show selected build matrix: $BUILD_TARGET_COUNT target</strong></summary>"
+            echo ""
+            echo "| # | Model | OOS | Android / Kernel | SoC | Codename | KSU Variant | KSU Ref | KSU Commit |"
+            echo "|---:|-------|-----|------------------|-----|----------|-------------|---------|------------|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          jq -r '
+            def ksu_label:
+              if . == "KSUN" then "KernelSU Next"
+              elif . == "KSU" then "KernelSU"
+              elif . == "RSKSU" then "ReSukiSU"
+              elif . == "SUKISU" then "SukiSU Ultra"
+              else .
+              end;
+
+            .include
+            | to_entries[]
+            | "| \(.key + 1) | `\(.value.model)` | `\(.value.os_version)` | `\(.value.android_version)-\(.value.kernel_version)` | `\(.value.cpu)` | `\(.value.codename)` | `\(.value.ksu_type | ksu_label)` | `\(.value.ksu_hash)` | `\(.value.ksu_resolved_hash)` |"
+          ' <<< "$matrix_json" >> "$GITHUB_STEP_SUMMARY"
+
+          {
+            echo ""
+            echo "</details>"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## 🧩 SUSFS Configuration"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${{ inputs.SUSFS_META }}" = "-1" ]; then
+            echo "- SUSFS is disabled for this build." >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "| Android / Kernel | SUSFS Ref | Branch | Module ZIP |"
+              echo "|------------------|-----------|--------|------------|"
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            susfs_input="${{ inputs.SUSFS_META }}"
+            fetched_hash="$SUSFS_HASH"
+
+            if [ -z "$susfs_input" ]; then
+              echo "| \`$ANDROID_KERNEL_KEY\` | 🔄 auto (\`$fetched_hash\`) | \`$SUSFS_BRANCH\` | \`${{ inputs.SUSFS_CI }}\` |" >> "$GITHUB_STEP_SUMMARY"
+            elif [[ "$susfs_input" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo "| \`$ANDROID_KERNEL_KEY\` | 📌 \`$susfs_input\` | \`$SUSFS_BRANCH\` | \`${{ inputs.SUSFS_CI }}\` |" >> "$GITHUB_STEP_SUMMARY"
+            elif [[ "$susfs_input" =~ ^[0-9]+$ ]]; then
+              echo "| \`$ANDROID_KERNEL_KEY\` | ↩️ rollback \`$susfs_input\` commits from \`$fetched_hash\` | \`$SUSFS_BRANCH\` | \`${{ inputs.SUSFS_CI }}\` |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "| \`$ANDROID_KERNEL_KEY\` | 🔀 \`$susfs_input\` (\`$fetched_hash\`) | \`$SUSFS_BRANCH\` | \`${{ inputs.SUSFS_CI }}\` |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+          {
+            echo ""
+            echo "> **💡 Note:** Displayed hashes are resolved at run time before the source build starts."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$TARGET_MODEL_FILTER" != "" ]; then
+            {
+              echo ""
+              echo "> **🎯 Target Model Filter:** Only exact model \`$TARGET_MODEL_FILTER\` is included."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "${{ inputs.SUSFS_DEV }}" = "true" ]; then
+            {
+              echo ""
+              echo "> **⚠️ SUSFS Dev Branch:** Development branch selected. It may be less stable than the normal branch."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "${{ inputs.KSU_SETUP_BRANCH }}" = "dev" ]; then
+            {
+              echo ""
+              echo "> **⚠️ ReSukiSU Dev Setup:** Dev setup branch selected. Upstream changes may break builds."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Publish Build Plan
         shell: bash
         run: |
