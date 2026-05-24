@@ -42,7 +42,7 @@ on:
         type: string
         description: "🕐 Kernel build timestamp: F = current UTC time | custom = e.g. 'Sun Mar 01 02:03:04 UTC 2026'"
         required: false
-        default: "F"
+        default: "Sun Mar 01 02:03:04 UTC 2026"
 
       KSU_META:
         type: string
@@ -72,7 +72,7 @@ on:
         type: boolean
         description: "🌐 Enable extended Netfilter/IPSet support (required for advanced firewall/VPN features)"
         required: true
-        default: false
+        default: true
 
       BBR_ECN:
         type: boolean
@@ -102,7 +102,7 @@ on:
         type: boolean
         description: "📤 Publish a GitHub Release with the AnyKernel3 ZIP (disable to keep as artifact only)"
         required: true
-        default: true
+        default: false
 
       SPACE_NOCLEAN:
         type: boolean
