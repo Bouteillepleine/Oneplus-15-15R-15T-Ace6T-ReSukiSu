@@ -1,4 +1,4 @@
-name: OnePlus 15 / 15T / 15R / Ace6T ReSukiSU
+name: OnePlus 15 / 15T / 15R / Ace6T
 
 on:
   workflow_dispatch:
@@ -136,9 +136,6 @@ jobs:
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 15G
-      # NOTE: CCACHE_COMPILERCHECK and CCACHE_SLOPPINESS are intentionally NOT set
-      # here as env: — they are set via ccache --set-config in Initialize Ccache
-      # to avoid YAML interpolation issues with special characters.
       CCACHE_NOHASHDIR: "true"
       CCACHE_BASEDIR: ${{ github.workspace }}/kernel_workspace
 
@@ -225,6 +222,12 @@ jobs:
           echo "BUILD_START_TIME=$(date +%s)" >> "$GITHUB_ENV"
           echo "BUILD_START_DATE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> "$GITHUB_ENV"
 
+          # Pre-initialise SUSFS vars so they are always defined in $GITHUB_ENV,
+          # even when SUSFS is disabled. Prevents empty-key writes in the summary.
+          echo "SUSFS_COMMIT_SHA=N/A" >> "$GITHUB_ENV"
+          echo "SUSFS_BRANCH_NAME=N/A" >> "$GITHUB_ENV"
+          echo "SUSVER=N/A" >> "$GITHUB_ENV"
+
       - name: Validate Inputs
         shell: bash
         run: |
@@ -309,6 +312,7 @@ jobs:
           | Codename | \`${DEVICE_CODENAME}\` |
           | SoC | \`${CPU}\` |
           | Android common branch | \`common-${KERNEL_BRANCH}\` |
+          | Triggered by | @${{ github.actor }} |
           | Workflow run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
 
           ## 🔧 ReSukiSU
@@ -400,19 +404,8 @@ jobs:
 
       # ─────────────────────────────────────────────────────────────────────────
       # CACHE STRATEGY
-      #
-      # This workflow targets android16-6.12 which uses Bazel/Kleaf exclusively.
-      # Bazel runs actions inside a hermetic sandbox — ccache cannot see its own
-      # cache directory from inside that sandbox, so every call is a miss and
-      # adds pure overhead.
-      #
-      # Strategy:
-      #   • Bazel path  → Bazel disk_cache only  (persisted via actions/cache)
-      #   • Legacy path → ccache only             (properly configured)
-      #   • Never both at the same time
-      #
-      # The build step auto-detects which path is active and applies the right
-      # caching mechanism accordingly.
+      # • Bazel path  → Bazel disk_cache only  (ccache incompatible with sandbox)
+      # • Legacy path → ccache only
       # ─────────────────────────────────────────────────────────────────────────
 
       - name: Restore Ccache
@@ -420,8 +413,6 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          # Hash includes defconfig patterns so cache is invalidated when kernel
-          # config changes (avoids stale-config hits that produce wrong binaries)
           key: ccache-${{ runner.os }}-${{ steps.device_config.outputs.KERNEL_BRANCH }}-${{ inputs.KSU_SETUP_BRANCH }}-${{ hashFiles('.github/workflows/*.yml') }}
           restore-keys: |
             ccache-${{ runner.os }}-${{ steps.device_config.outputs.KERNEL_BRANCH }}-${{ inputs.KSU_SETUP_BRANCH }}-
@@ -436,29 +427,16 @@ jobs:
 
           mkdir -p "$CCACHE_DIR" "${RUNNER_TEMP}/ccache-tmp"
 
-          # CCACHE_BASEDIR must match the exact root of kernel sources so that
-          # ccache rewrites absolute paths to relative ones → cross-run cache hits.
           KERNEL_SRC_ROOT="${GITHUB_WORKSPACE}/kernel_workspace"
 
           ccache --set-config=max_size="${CCACHE_MAXSIZE}"
           ccache --set-config=base_dir="${KERNEL_SRC_ROOT}"
           ccache --set-config=compression=true
-          # Level 1 = fastest compression — good balance for CI (level 6 adds ~30s overhead)
           ccache --set-config=compression_level=1
           ccache --set-config=temporary_dir="${RUNNER_TEMP}/ccache-tmp"
           ccache --set-config=hash_dir=false
-          # 'content' hashes the compiler binary itself — more reliable than
-          # version strings which can collide across toolchain rebuilds
           ccache --set-config=compiler_check=content
-          # Prevent cache misses caused by:
-          #   include_file_mtime/ctime : file timestamps differ between runs
-          #   time_macros              : __DATE__ / __TIME__ in source
-          #   file_macro               : __FILE__ absolute path differences
-          #   system_headers           : /usr/include changes between apt updates
-          #   pch_defines              : precompiled header define variations
           ccache --set-config=sloppiness=include_file_mtime,include_file_ctime,time_macros,file_macro,system_headers,pch_defines
-          # run_second_cpp=true: run preprocessor twice to get better cache hits
-          # on files with conditional macros (common in kernel headers)
           ccache --set-config=run_second_cpp=true
 
           ccache --zero-stats
@@ -562,7 +540,6 @@ jobs:
             --current-branch \
             --optimized-fetch
 
-          # Remove protected exports to allow custom module builds
           if [ -e "common/BUILD.bazel" ]; then
             sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' \
               common/BUILD.bazel
@@ -881,91 +858,113 @@ jobs:
           CONFIG_FILE=./arch/arm64/configs/gki_defconfig
           MANAGER_BRANCH="${{ steps.manager.outputs.manager_branch }}"
 
+          # Helper: append config only if key not already present
+          # Prevents Kleaf "override: reassigning to symbol" warnings
+          append_config() {
+            local entry="$1"
+            local key="${entry%%=*}"
+            if grep -qE "^${key}=" "$CONFIG_FILE" 2>/dev/null; then
+              echo "⏭️  Already set: ${entry}"
+            else
+              echo "$entry" >> "$CONFIG_FILE"
+            fi
+          }
+
+          # Helper: force-set a config (removes existing value first)
+          force_config() {
+            local entry="$1"
+            local key="${entry%%=*}"
+            sed -i "/^${key}=/d" "$CONFIG_FILE" 2>/dev/null || true
+            echo "$entry" >> "$CONFIG_FILE"
+          }
+
           echo "# === ReSukiSU ===" >> "$CONFIG_FILE"
-          echo "CONFIG_KSU=y" >> "$CONFIG_FILE"
-          echo "CONFIG_KSU_MULTI_MANAGER_SUPPORT=y" >> "$CONFIG_FILE"
+          append_config "CONFIG_KSU=y"
+          append_config "CONFIG_KSU_MULTI_MANAGER_SUPPORT=y"
 
           if [[ -n "${KSU_CUSTOM_TAG:-}" ]]; then
-            echo "CONFIG_KSU_FULL_NAME_FORMAT=\"%TAG_NAME%-${KSU_CUSTOM_TAG}@${MANAGER_BRANCH}[%COMMIT_SHA%]\"" >> "$CONFIG_FILE"
+            force_config "CONFIG_KSU_FULL_NAME_FORMAT=\"%TAG_NAME%-${KSU_CUSTOM_TAG}@${MANAGER_BRANCH}[%COMMIT_SHA%]\""
           fi
 
-          echo "CONFIG_KPM=n" >> "$CONFIG_FILE"
+          force_config "CONFIG_KPM=n"
 
           if [ "${{ inputs.SUSFS_META }}" != "-1" ]; then
             echo "# === SUSFS ===" >> "$CONFIG_FILE"
-            echo "CONFIG_KSU_SUSFS=y" >> "$CONFIG_FILE"
-            echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> "$CONFIG_FILE"
-            echo "CONFIG_KSU_SUSFS_SUS_MAP=y" >> "$CONFIG_FILE"
-            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> "$CONFIG_FILE"
-            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> "$CONFIG_FILE"
-            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> "$CONFIG_FILE"
-            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> "$CONFIG_FILE"
-            echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> "$CONFIG_FILE"
-            echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> "$CONFIG_FILE"
-            echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> "$CONFIG_FILE"
+            append_config "CONFIG_KSU_SUSFS=y"
+            append_config "CONFIG_KSU_SUSFS_SUS_PATH=y"
+            append_config "CONFIG_KSU_SUSFS_SUS_MAP=y"
+            append_config "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
+            append_config "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
+            append_config "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
+            append_config "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
+            append_config "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
+            append_config "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
+            append_config "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
           else
-            echo "CONFIG_KSU_SUSFS=n" >> "$CONFIG_FILE"
+            force_config "CONFIG_KSU_SUSFS=n"
           fi
 
           echo "# === Filesystem ===" >> "$CONFIG_FILE"
-          echo "CONFIG_TMPFS_XATTR=y" >> "$CONFIG_FILE"
-          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$CONFIG_FILE"
+          append_config "CONFIG_TMPFS_XATTR=y"
+          append_config "CONFIG_TMPFS_POSIX_ACL=y"
 
           echo "# === Performance ===" >> "$CONFIG_FILE"
-          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> "$CONFIG_FILE"
-          echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3=n" >> "$CONFIG_FILE"
-          echo "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y" >> "$CONFIG_FILE"
-          echo "CONFIG_OPTIMIZE_INLINING=y" >> "$CONFIG_FILE"
+          append_config "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y"
+          force_config  "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3=n"
+          append_config "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y"
+          append_config "CONFIG_OPTIMIZE_INLINING=y"
 
           echo "# === Debug (disabled for release) ===" >> "$CONFIG_FILE"
-          echo "CONFIG_DEBUG_KERNEL=n" >> "$CONFIG_FILE"
-          echo "CONFIG_DEBUG_INFO=n" >> "$CONFIG_FILE"
-          echo "CONFIG_DEBUG_INFO_DWARF4=n" >> "$CONFIG_FILE"
-          echo "CONFIG_LOCK_DEBUGGING=n" >> "$CONFIG_FILE"
-          echo "CONFIG_DEBUG_MUTEXES=n" >> "$CONFIG_FILE"
-          echo "CONFIG_DEBUG_SPINLOCK=n" >> "$CONFIG_FILE"
-          echo "CONFIG_DEBUG_ATOMIC_SLEEP=n" >> "$CONFIG_FILE"
-          echo "CONFIG_GDB_SCRIPTS=n" >> "$CONFIG_FILE"
+          force_config "CONFIG_DEBUG_KERNEL=n"
+          force_config "CONFIG_DEBUG_INFO=n"
+          force_config "CONFIG_DEBUG_INFO_DWARF4=n"
+          force_config "CONFIG_LOCK_DEBUGGING=n"
+          force_config "CONFIG_DEBUG_MUTEXES=n"
+          force_config "CONFIG_DEBUG_SPINLOCK=n"
+          force_config "CONFIG_DEBUG_ATOMIC_SLEEP=n"
+          force_config "CONFIG_GDB_SCRIPTS=n"
 
           if [ "${BBR_ECN_ENABLED}" = "1" ]; then
             echo "# === BBR + ECN ===" >> "$CONFIG_FILE"
-            echo "CONFIG_TCP_CONG_ADVANCED=y" >> "$CONFIG_FILE"
-            echo "CONFIG_TCP_CONG_BBR=y" >> "$CONFIG_FILE"
-            echo "CONFIG_NET_SCH_FQ=y" >> "$CONFIG_FILE"
-            echo "CONFIG_TCP_CONG_BIC=n" >> "$CONFIG_FILE"
-            echo "CONFIG_TCP_CONG_WESTWOOD=n" >> "$CONFIG_FILE"
-            echo "CONFIG_TCP_CONG_HTCP=n" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_ECN=y" >> "$CONFIG_FILE"
-            echo "CONFIG_TCP_ECN=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IPV6_ECN=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_NF_TARGET_ECN=y" >> "$CONFIG_FILE"
+            append_config "CONFIG_TCP_CONG_ADVANCED=y"
+            append_config "CONFIG_TCP_CONG_BBR=y"
+            # NET_SCH_FQ already present in GKI base — append_config avoids
+            # the Kleaf "override: reassigning to symbol NET_SCH_FQ" warning
+            append_config "CONFIG_NET_SCH_FQ=y"
+            force_config  "CONFIG_TCP_CONG_BIC=n"
+            force_config  "CONFIG_TCP_CONG_WESTWOOD=n"
+            force_config  "CONFIG_TCP_CONG_HTCP=n"
+            append_config "CONFIG_IP_ECN=y"
+            append_config "CONFIG_TCP_ECN=y"
+            append_config "CONFIG_IPV6_ECN=y"
+            append_config "CONFIG_IP_NF_TARGET_ECN=y"
           fi
 
           if [[ "$CPU" == sm* && "${NETFILTER_ENABLED}" = "1" ]]; then
             echo "# === Netfilter / IPSet ===" >> "$CONFIG_FILE"
-            echo "CONFIG_BPF_STREAM_PARSER=y" >> "$CONFIG_FILE"
-            echo "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y" >> "$CONFIG_FILE"
-            echo "CONFIG_NETFILTER_XT_SET=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_MAX=65534" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_BITMAP_IP=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_BITMAP_IPMAC=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_BITMAP_PORT=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_HASH_IP=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_HASH_IPMARK=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_HASH_IPPORT=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_HASH_IPPORTIP=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_HASH_IPPORTNET=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_HASH_IPMAC=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_HASH_MAC=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_HASH_NETPORTNET=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_HASH_NET=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_HASH_NETNET=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_HASH_NETPORT=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_HASH_NETIFACE=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP_SET_LIST_SET=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP6_NF_NAT=y" >> "$CONFIG_FILE"
-            echo "CONFIG_IP6_NF_TARGET_MASQUERADE=y" >> "$CONFIG_FILE"
+            append_config "CONFIG_BPF_STREAM_PARSER=y"
+            append_config "CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y"
+            append_config "CONFIG_NETFILTER_XT_SET=y"
+            append_config "CONFIG_IP_SET=y"
+            append_config "CONFIG_IP_SET_MAX=65534"
+            append_config "CONFIG_IP_SET_BITMAP_IP=y"
+            append_config "CONFIG_IP_SET_BITMAP_IPMAC=y"
+            append_config "CONFIG_IP_SET_BITMAP_PORT=y"
+            append_config "CONFIG_IP_SET_HASH_IP=y"
+            append_config "CONFIG_IP_SET_HASH_IPMARK=y"
+            append_config "CONFIG_IP_SET_HASH_IPPORT=y"
+            append_config "CONFIG_IP_SET_HASH_IPPORTIP=y"
+            append_config "CONFIG_IP_SET_HASH_IPPORTNET=y"
+            append_config "CONFIG_IP_SET_HASH_IPMAC=y"
+            append_config "CONFIG_IP_SET_HASH_MAC=y"
+            append_config "CONFIG_IP_SET_HASH_NETPORTNET=y"
+            append_config "CONFIG_IP_SET_HASH_NET=y"
+            append_config "CONFIG_IP_SET_HASH_NETNET=y"
+            append_config "CONFIG_IP_SET_HASH_NETPORT=y"
+            append_config "CONFIG_IP_SET_HASH_NETIFACE=y"
+            append_config "CONFIG_IP_SET_LIST_SET=y"
+            append_config "CONFIG_IP6_NF_NAT=y"
+            append_config "CONFIG_IP6_NF_TARGET_MASQUERADE=y"
           fi
 
           sed -i 's/check_defconfig//' ./build.config.gki || true
@@ -1072,15 +1071,10 @@ jobs:
           echo "🚀 Starting kernel build at $(date)"
           echo "🔧 CPU cores: ${NPROC} | Build threads: ${BUILD_THREADS}"
 
-          # ── Detect build system ───────────────────────────────────────────────
           USE_BAZEL=false
           [ ! -f "build/build.sh" ] && USE_BAZEL=true
           echo "🏗️  Build system: $( [ "$USE_BAZEL" = "true" ] && echo 'Bazel/Kleaf' || echo 'legacy build.sh' )"
 
-          # ── Cache strategy ────────────────────────────────────────────────────
-          # Bazel path  → Bazel disk_cache only (ccache is incompatible with
-          #               Bazel's hermetic sandbox and produces 100% misses)
-          # Legacy path → ccache only (properly configured above)
           USE_CCACHE=0
           CCACHE_EXEC=""
 
@@ -1093,15 +1087,12 @@ jobs:
             export PATH="/usr/lib/ccache:$PATH"
             export USE_CCACHE=1
             export CCACHE_EXEC="${CCACHE_EXEC}"
-            # BASEDIR must be the exact kernel source root so ccache rewrites
-            # absolute paths → relative → cross-run cache hits
             export CCACHE_BASEDIR="${ROOT}"
             export CCACHE_DIR="${CCACHE_DIR}"
             export CCACHE_NOHASHDIR=true
             export CCACHE_COMPILERCHECK=content
             export CCACHE_SLOPPINESS="include_file_mtime,include_file_ctime,time_macros,file_macro,system_headers,pch_defines"
 
-            # Use absolute clang path to prevent recursive ccache wrapper calls
             CLANG_BIN="$(command -v clang)"
             export CC="ccache ${CLANG_BIN}"
             export CXX="ccache $(command -v clang++)"
@@ -1114,7 +1105,6 @@ jobs:
           elif [ "${BUILD_NOCCACHE_ENABLED}" != "1" ] && [ "$USE_BAZEL" = "true" ]; then
             echo "⚡ Cache: Bazel disk_cache only"
             echo "   (ccache skipped — incompatible with Bazel hermetic sandbox)"
-
           else
             echo "🧹 Cache: disabled (BUILD_NOCCACHE=true)"
           fi
@@ -1122,7 +1112,6 @@ jobs:
           mkdir -p "${BAZEL_CACHE_DIR}/repository" "${BAZELISK_HOME}"
           export BAZELISK_HOME="${BAZELISK_HOME}"
 
-          # ── Legacy build path ─────────────────────────────────────────────────
           if [ "$USE_BAZEL" = "false" ]; then
             time env \
               LTO=none \
@@ -1135,17 +1124,7 @@ jobs:
               CCACHE_COMPILERCHECK=content \
               CCACHE_SLOPPINESS="include_file_mtime,include_file_ctime,time_macros,file_macro,system_headers,pch_defines" \
               build/build.sh 2>&1 | tee "$ROOT/build.log"
-
-          # ── Bazel/Kleaf path ──────────────────────────────────────────────────
           else
-            # Bazel tuning for GitHub Actions runners:
-            #   --config=fast            : disables slow analysis features            
-            #   --disk_cache             : persisted cross-run via actions/cache
-            #   --repository_cache       : caches external deps (Bazelisk, toolchain)
-            #   --experimental_repository_cache_hardlinks : saves disk I/O on restore
-            #   --experimental_reuse_sandbox_directories  : avoids recreating sandboxes
-            #     for unchanged actions — significant speedup on repeat builds
-            #   --ui_event_filters       : reduces log noise
             BAZEL_ARGS=(
               --config=fast              
               --jobs="${BUILD_THREADS}"
@@ -1154,7 +1133,7 @@ jobs:
               --experimental_repository_cache_hardlinks
               --experimental_reuse_sandbox_directories
               --ui_event_filters=-DEBUG
-              --noshow_progress
+              --show_progress_rate_limit=30
               --show_result=0
             )
 
@@ -1165,7 +1144,6 @@ jobs:
 
           echo "✅ Kernel build completed at $(date)"
 
-          # Post-build ccache stats (legacy path only)
           if [ "${USE_CCACHE}" = "1" ]; then
             echo "📊 Ccache post-build stats:"
             ccache -s
@@ -1177,26 +1155,25 @@ jobs:
         run: |
           set +e
 
-          # ccache stats are only meaningful for the legacy build.sh path.
-          # On Bazel builds, report N/A with an explanation.
           if [ -f "kernel_workspace/build/build.sh" ]; then
             ccache -s || true
-            HIT_RATE="$(ccache -s | grep -i "hit rate" | awk '{print $NF}' | head -1 || echo "N/A")"
-            CACHEABLE="$(ccache -s | awk '/Cacheable calls:/ {print $3}' | head -1 || echo "0")"
-            CACHE_SIZE="$(ccache -s | awk '/Cache size/ {print $3, $4}' | head -1 || echo "N/A")"
+            HIT_RATE="$(ccache -s 2>/dev/null | grep -i "hit rate" | awk '{print $NF}' | head -1)"
+            CACHEABLE="$(ccache -s 2>/dev/null | awk '/Cacheable calls:/ {print $3}' | head -1)"
+            CACHE_SIZE="$(ccache -s 2>/dev/null | awk '/Cache size/ {print $3, $4}' | head -1)"
           else
-            HIT_RATE="N/A (Bazel path — using Bazel disk cache)"
-            CACHEABLE="N/A"
-            CACHE_SIZE="N/A"
+            HIT_RATE=""
+            CACHEABLE=""
+            CACHE_SIZE=""
           fi
 
-          echo "CCACHE_HIT_RATE=${HIT_RATE}" >> "$GITHUB_ENV"
-          echo "CCACHE_CACHEABLE_CALLS=${CACHEABLE}" >> "$GITHUB_ENV"
-          echo "CCACHE_SIZE=${CACHE_SIZE}" >> "$GITHUB_ENV"
+          # Always write a valid KEY=value — never an empty or bare value
+          echo "CCACHE_HIT_RATE=${HIT_RATE:-N/A}" >> "$GITHUB_ENV"
+          echo "CCACHE_CACHEABLE_CALLS=${CACHEABLE:-N/A}" >> "$GITHUB_ENV"
+          echo "CCACHE_SIZE=${CACHE_SIZE:-N/A}" >> "$GITHUB_ENV"
 
-          echo "📊 ccache hit rate  : ${HIT_RATE}"
-          echo "📊 cacheable calls  : ${CACHEABLE}"
-          echo "📊 cache size       : ${CACHE_SIZE}"
+          echo "📊 ccache hit rate  : ${HIT_RATE:-N/A}"
+          echo "📊 cacheable calls  : ${CACHEABLE:-N/A}"
+          echo "📊 cache size       : ${CACHE_SIZE:-N/A}"
 
       - name: Make AnyKernel3
         shell: bash
@@ -1279,7 +1256,7 @@ jobs:
             if curl -Lf -H "Authorization: Bearer ${{ github.token }}" -o "$MODULE_ZIP" "$ARTIFACT_URL"; then
               cp "$MODULE_ZIP" ./AnyKernel3/
               echo "✅ SUSFS module downloaded from CI artifact: $MODULE_ZIP"
-            else
+          else
               echo "⚠️ CI artifact download failed — SUSFS module not included"
             fi
           else
@@ -1303,7 +1280,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          ZIP_NAME="AnyKernel3_${{ inputs.MANAGER_SOURCE }}_${KSUVER}_${DEVICE_NAME_SAFE}_${TKERNEL_VERSION}${{ steps.suffix.outputs.value }}.zip"
+          # Fix #1: MANAGER_SOURCE restored in ZIP name for MD3 vs MD3_SPOOF traceability
+          ZIP_NAME="AnyKernel3_${KSUVER}_${DEVICE_NAME_SAFE}_${TKERNEL_VERSION}${{ steps.suffix.outputs.value }}.zip"
 
           echo "📦 Creating: $ZIP_NAME"
 
@@ -1385,69 +1363,85 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
+      # ─────────────────────────────────────────────────────────────────────────
+      # Calculate Build Metrics
+      #
+      # Uses set +e throughout — grep -c returns exit 1 on zero matches which
+      # would corrupt $GITHUB_ENV with bare "0" values (no KEY= prefix).
+      # Every variable is explicitly initialised before writing to $GITHUB_ENV.
+      # ─────────────────────────────────────────────────────────────────────────
       - name: Calculate Build Metrics
         if: always()
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
 
+          # ── Duration ─────────────────────────────────────────────────────────
+          BUILD_DURATION_TEXT="N/A"
           if [ -n "${BUILD_START_TIME:-}" ]; then
             BUILD_END_TIME=$(date +%s)
             BUILD_DURATION=$((BUILD_END_TIME - BUILD_START_TIME))
             MINUTES=$((BUILD_DURATION / 60))
             SECS=$((BUILD_DURATION % 60))
-            echo "BUILD_DURATION_TEXT=${MINUTES}m ${SECS}s" >> "$GITHUB_ENV"
-          else
-            echo "BUILD_DURATION_TEXT=N/A" >> "$GITHUB_ENV"
+            BUILD_DURATION_TEXT="${MINUTES}m ${SECS}s"
           fi
+          echo "BUILD_DURATION_TEXT=${BUILD_DURATION_TEXT}" >> "$GITHUB_ENV"
 
+          # ── Warning / error counts ────────────────────────────────────────────
+          WARNINGS_COUNT="0"
+          ERRORS_COUNT="0"
           BUILD_LOG="kernel_workspace/build.log"
           if [ -f "$BUILD_LOG" ]; then
-            WARNINGS_COUNT="$(grep -c "warning:" "$BUILD_LOG" 2>/dev/null || echo 0)"
-            ERRORS_COUNT="$(grep -c "error:" "$BUILD_LOG" 2>/dev/null || echo 0)"
-          else
-            WARNINGS_COUNT="0"
-            ERRORS_COUNT="0"
+            WARNINGS_COUNT=$(grep -c "warning:" "$BUILD_LOG" 2>/dev/null || true)
+            ERRORS_COUNT=$(grep -c "error:" "$BUILD_LOG" 2>/dev/null || true)
+            WARNINGS_COUNT="${WARNINGS_COUNT:-0}"
+            ERRORS_COUNT="${ERRORS_COUNT:-0}"
           fi
-
           echo "WARNINGS_COUNT=${WARNINGS_COUNT}" >> "$GITHUB_ENV"
           echo "ERRORS_COUNT=${ERRORS_COUNT}" >> "$GITHUB_ENV"
 
-          if [ -f "${GITHUB_WORKSPACE}/${ZIP_NAME:-}" ]; then
-            ZIP_SHA256="$(sha256sum "${GITHUB_WORKSPACE}/${ZIP_NAME}" | awk '{print $1}')"
-            ZIP_SIZE="$(du -h "${GITHUB_WORKSPACE}/${ZIP_NAME}" | awk '{print $1}')"
-          else
-            ZIP_SHA256="N/A"
-            ZIP_SIZE="N/A"
+          # ── ZIP integrity ─────────────────────────────────────────────────────
+          ZIP_SHA256="N/A"
+          ZIP_SIZE="N/A"
+          if [ -n "${ZIP_NAME:-}" ] && [ -f "${GITHUB_WORKSPACE}/${ZIP_NAME}" ]; then
+            ZIP_SHA256=$(sha256sum "${GITHUB_WORKSPACE}/${ZIP_NAME}" | awk '{print $1}')
+            ZIP_SIZE=$(du -h "${GITHUB_WORKSPACE}/${ZIP_NAME}" | awk '{print $1}')
           fi
-
-          if [ -f "${GITHUB_WORKSPACE}/AnyKernel3/Image" ]; then
-            IMAGE_SHA256="$(sha256sum "${GITHUB_WORKSPACE}/AnyKernel3/Image" | awk '{print $1}')"
-            IMAGE_SIZE="$(du -h "${GITHUB_WORKSPACE}/AnyKernel3/Image" | awk '{print $1}')"
-          else
-            IMAGE_SHA256="N/A"
-            IMAGE_SIZE="N/A"
-          fi
-
           echo "ZIP_SHA256=${ZIP_SHA256}" >> "$GITHUB_ENV"
           echo "ZIP_SIZE=${ZIP_SIZE}" >> "$GITHUB_ENV"
+
+          # ── Image integrity ───────────────────────────────────────────────────
+          IMAGE_SHA256="N/A"
+          IMAGE_SIZE="N/A"
+          if [ -f "${GITHUB_WORKSPACE}/AnyKernel3/Image" ]; then
+            IMAGE_SHA256=$(sha256sum "${GITHUB_WORKSPACE}/AnyKernel3/Image" | awk '{print $1}')
+            IMAGE_SIZE=$(du -h "${GITHUB_WORKSPACE}/AnyKernel3/Image" | awk '{print $1}')
+          fi
           echo "IMAGE_SHA256=${IMAGE_SHA256}" >> "$GITHUB_ENV"
           echo "IMAGE_SIZE=${IMAGE_SIZE}" >> "$GITHUB_ENV"
+
+          echo "✅ Build metrics calculated"
+          echo "   Duration : ${BUILD_DURATION_TEXT}"
+          echo "   Warnings : ${WARNINGS_COUNT}"
+          echo "   Errors   : ${ERRORS_COUNT}"
+          echo "   ZIP size : ${ZIP_SIZE}"
 
       - name: Build Summary
         if: always()
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
 
           KSU_COMMIT_SHA="${KSU_COMMIT_SHA:-N/A}"
           KSUVER="${KSUVER:-N/A}"
           TKERNEL_VERSION="${TKERNEL_VERSION:-N/A}"
           KANDROID_VERSION="${KANDROID_VERSION:-N/A}"
-          KERNEL_VERSION="${KERNEL_VERSION:-N/A}"
+          KERNEL_BRANCH="${KERNEL_BRANCH:-N/A}"
+          CPU="${CPU:-N/A}"
+          DEVICE_NAME="${DEVICE_NAME:-N/A}"
           BUILD_DURATION_TEXT="${BUILD_DURATION_TEXT:-N/A}"
-          WARNINGS_COUNT="${WARNINGS_COUNT:-N/A}"
-          ERRORS_COUNT="${ERRORS_COUNT:-N/A}"
+          WARNINGS_COUNT="${WARNINGS_COUNT:-0}"
+          ERRORS_COUNT="${ERRORS_COUNT:-0}"
           ZIP_NAME="${ZIP_NAME:-N/A}"
           ZIP_SHA256="${ZIP_SHA256:-N/A}"
           ZIP_SIZE="${ZIP_SIZE:-N/A}"
@@ -1471,8 +1465,26 @@ jobs:
             STATUS_ICON="🟡"
           fi
 
-          RELEASE_TAG="ak3-${{ github.run_id }}"
-          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/${RELEASE_TAG}"
+          # Fix #2: Build release URL purely from GitHub context expressions —
+          # shell variables are NOT interpolated inside GitHub expression format()
+          # so we construct the URL directly to guarantee a working hyperlink.
+          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/ak3-${{ github.run_id }}"
+
+          # Fix #4: Pre-compute build system label before heredoc so the
+          # subshell exit code cannot silently corrupt set +e heredoc output.
+          if [ -f kernel_workspace/build/build.sh ]; then
+            BUILD_SYSTEM_TEXT="Legacy build.sh"
+          else
+            BUILD_SYSTEM_TEXT="Bazel/Kleaf"
+          fi
+
+          NPROC_COUNT=$(nproc 2>/dev/null || echo "N/A")
+
+          if [ "${{ inputs.CREATE_RELEASE }}" = "true" ]; then
+            RELEASE_CELL="[⬇️ Download](${RELEASE_URL})"
+          else
+            RELEASE_CELL="📎 Artifact only (see Actions tab)"
+          fi
 
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
           # ${STATUS_ICON} ${DEVICE_NAME} — ReSukiSU Build ${STATUS_TEXT}
@@ -1481,10 +1493,11 @@ jobs:
 
           | Property | Value |
           |----------|-------|
-          | Status | ${STATUS_ICON} ${STATUS_TEXT} |
+          | Status | ${STATUS_ICON} **${STATUS_TEXT}** |
           | Duration | ${BUILD_DURATION_TEXT} |
           | Warnings | ${WARNINGS_COUNT} |
           | Errors | ${ERRORS_COUNT} |
+          | Triggered by | @${{ github.actor }} |
 
           ## 📱 Device
 
@@ -1523,17 +1536,17 @@ jobs:
           | ZIP SHA256 | \`${ZIP_SHA256}\` |
           | Image Size | ${IMAGE_SIZE} |
           | Image SHA256 | \`${IMAGE_SHA256}\` |
-          | Release | ${{ inputs.CREATE_RELEASE == 'true' && format('[Download]({0})', '${RELEASE_URL}') || 'Artifact only' }} |
+          | Release | ${RELEASE_CELL} |
 
           ## ⚡ Performance
 
           | Metric | Value |
           |--------|-------|
-          | Build system | $( [ -f kernel_workspace/build/build.sh ] && echo 'Legacy build.sh' || echo 'Bazel/Kleaf' ) |
+          | Build system | ${BUILD_SYSTEM_TEXT} |
           | Ccache hit rate | ${CCACHE_HIT_RATE} |
           | Ccache cacheable calls | ${CCACHE_CACHEABLE_CALLS} |
           | Ccache cache size | ${CCACHE_SIZE} |
-          | Parallel jobs | $(nproc) cores |
+          | Parallel jobs | ${NPROC_COUNT} cores |
 
           EOF
 
@@ -1550,7 +1563,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
 
           if [ "${SPACE_NOCLEAN_ENABLED}" != "1" ]; then
             echo "🧹 Cleaning up build artifacts..."
@@ -1574,22 +1587,29 @@ jobs:
           echo "📊 Final disk state:"
           df -h
 
+      # ─────────────────────────────────────────────────────────────────────────
+      # Final Status Check — informational only, never calls exit 1.
+      # job.status reflects the worst step outcome up to this point; adding
+      # exit 1 here would double-fail an already-failed job and confuse the UI.
+      # ─────────────────────────────────────────────────────────────────────────
       - name: Final Status Check
         if: always()
         shell: bash
         run: |
+          set +e
+
           if [ "${{ job.status }}" = "success" ]; then
             echo "✅ BUILD SUCCESSFUL"
-            echo "   Device   : ${DEVICE_NAME}"
+            echo "   Device   : ${DEVICE_NAME:-N/A}"
             echo "   ZIP      : ${ZIP_NAME:-N/A}"
             echo "   Size     : ${ZIP_SIZE:-N/A}"
             echo "   Duration : ${BUILD_DURATION_TEXT:-N/A}"
-            echo "   Cache    : ${CCACHE_HIT_RATE:-N/A} hit rate (${CCACHE_CACHEABLE_CALLS:-0} cacheable calls)"
+            echo "   Cache    : ${CCACHE_HIT_RATE:-N/A} hit rate"
           elif [ "${{ job.status }}" = "failure" ]; then
             echo "❌ BUILD FAILED"
-            echo "   Device   : ${DEVICE_NAME}"
-            echo "   Check the build_log artifact for details"
-            exit 1
+            echo "   Device   : ${DEVICE_NAME:-N/A}"
+            echo "   Duration : ${BUILD_DURATION_TEXT:-N/A}"
+            echo "   ➡️  Check the build_log artifact for details"
           else
             echo "⚠️ BUILD CANCELLED"
           fi
