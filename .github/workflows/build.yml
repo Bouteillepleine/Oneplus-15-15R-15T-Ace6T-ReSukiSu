@@ -283,34 +283,232 @@ jobs:
 
           echo "Inputs validated"
 
-      - name: Build Plan Summary
+      - name: Publish Build Plan
         shell: bash
         run: |
           set -euo pipefail
 
-          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          # Build Plan
+          # -----------------------------
+          # Resolve ReSukiSU display info
+          # -----------------------------
+          KSU_META_INPUT="${{ inputs.KSU_META }}"
+          IFS='/' read -r KSU_BRANCH KSU_TAG KSU_HASH <<< "$KSU_META_INPUT"
 
-          | Setting | Value |
-          |--------|-------|
-          | Device | ${DEVICE_NAME} |
-          | SoC | ${CPU} |
-          | Kernel branch | \`common-${KERNEL_BRANCH}\` |
-          | Manager source | \`${{ inputs.MANAGER_SOURCE }}\` |
-          | ReSukiSU setup branch | \`${{ inputs.KSU_SETUP_BRANCH }}\` |
-          | KSU_META | \`${{ inputs.KSU_META }}\` |
-          | SUSFS | ${{ inputs.SUSFS_META != '-1' && 'Enabled' || 'Disabled' }} |
-          | SUSFS module source | \`${{ inputs.SUSFS_CI }}\` |
-          | SUSFS dev branch | \`${{ inputs.SUSFS_DEV }}\` |
-          | KPM mode | \`${{ inputs.KPM }}\` |
-          | Baseband Guard | \`${{ inputs.BASEBAND_GUARD }}\` |
-          | Netfilter | \`${{ inputs.NETFILTER }}\` |
-          | BBR + ECN | \`${{ inputs.BBR_ECN }}\` |
-          | Unicode bypass | \`${{ inputs.UNICODE_BYPASS }}\` |
-          | No_5uS fix | \`${{ inputs.XUS_FIX }}\` |
-          | Ccache | ${{ !inputs.DISABLE_CCACHE && 'Enabled' || 'Disabled' }} |
-          | Create release | \`${{ inputs.CREATE_RELEASE }}\` |
+          KSU_BRANCH="${KSU_BRANCH:-main}"
+          KSU_TAG="${KSU_TAG:-default}"
+          KSU_HASH="${KSU_HASH:-latest}"
+
+          if [ "$KSU_HASH" = "latest" ] || [ -z "$KSU_HASH" ]; then
+            KSU_HASH_TEXT="🔄 latest"
+          else
+            KSU_HASH_TEXT="📌 ${KSU_HASH}"
+          fi
+
+          case "${{ inputs.MANAGER_SOURCE }}" in
+            MD3_SPOOF)
+              MANAGER_TEXT="🕶️ MD3 Spoof"
+              ;;
+            MD3)
+              MANAGER_TEXT="📱 MD3"
+              ;;
+            *)
+              MANAGER_TEXT="${{ inputs.MANAGER_SOURCE }}"
+              ;;
+          esac
+
+          # -----------------------------
+          # Resolve SUSFS display info
+          # -----------------------------
+          if [ "${{ inputs.SUSFS_META }}" = "-1" ]; then
+            SUSFS_STATUS="❌ Disabled"
+            SUSFS_REF="N/A"
+            SUSFS_MODULE_TEXT="N/A"
+          elif [ -z "${{ inputs.SUSFS_META }}" ]; then
+            SUSFS_STATUS="✅ Enabled"
+            SUSFS_REF="🔄 auto / latest"
+            SUSFS_MODULE_TEXT="${{ inputs.SUSFS_CI }}"
+          elif [[ "${{ inputs.SUSFS_META }}" =~ ^[0-9]+$ ]]; then
+            SUSFS_STATUS="✅ Enabled"
+            SUSFS_REF="↩️ rollback ${{ inputs.SUSFS_META }} commits"
+            SUSFS_MODULE_TEXT="${{ inputs.SUSFS_CI }}"
+          else
+            SUSFS_STATUS="✅ Enabled"
+            SUSFS_REF="📌 ${{ inputs.SUSFS_META }}"
+            SUSFS_MODULE_TEXT="${{ inputs.SUSFS_CI }}"
+          fi
+
+          if [ "${{ inputs.SUSFS_DEV }}" = "true" ]; then
+            SUSFS_BRANCH_TEXT="🧪 dev"
+          else
+            SUSFS_BRANCH_TEXT="stable"
+          fi
+
+          SUSFS_KERNEL_LINE="${KANDROID_VERSION:-android16}-${KERNEL_VERSION:-6.12}"
+
+          # -----------------------------
+          # Resolve BUILD_TIME display info
+          # -----------------------------
+          if [ "${{ inputs.BUILD_TIME }}" = "-1" ]; then
+            BUILD_TIME_TEXT="❌ Not modified"
+          elif [ -z "${{ inputs.BUILD_TIME }}" ] || [ "${{ inputs.BUILD_TIME }}" = "F" ] || [ "${{ inputs.BUILD_TIME }}" = "f" ]; then
+            BUILD_TIME_TEXT="🕒 Current UTC time"
+          else
+            BUILD_TIME_TEXT="📌 ${{ inputs.BUILD_TIME }}"
+          fi
+
+          # -----------------------------
+          # Resolve suffix display info
+          # -----------------------------
+          if [ "${{ inputs.SUFFIX }}" = "-1" ]; then
+            SUFFIX_TEXT="❌ Disabled"
+          elif [ -z "${{ inputs.SUFFIX }}" ]; then
+            SUFFIX_TEXT="🎲 Random"
+          else
+            SUFFIX_TEXT="📌 ${{ inputs.SUFFIX }}"
+          fi
+
+          # -----------------------------
+          # Resolve feature display info
+          # -----------------------------
+          bool_icon() {
+            if [ "$1" = "true" ]; then
+              echo "✅ Yes"
+            else
+              echo "❌ No"
+            fi
+          }
+
+          BASEBAND_GUARD_TEXT="$(bool_icon "${{ inputs.BASEBAND_GUARD }}")"
+          NETFILTER_TEXT="$(bool_icon "${{ inputs.NETFILTER }}")"
+          BBR_ECN_TEXT="$(bool_icon "${{ inputs.BBR_ECN }}")"
+          UNICODE_BYPASS_TEXT="$(bool_icon "${{ inputs.UNICODE_BYPASS }}")"
+          XUS_FIX_TEXT="$(bool_icon "${{ inputs.XUS_FIX }}")"
+          CREATE_RELEASE_TEXT="$(bool_icon "${{ inputs.CREATE_RELEASE }}")"
+
+          if [ "${{ inputs.DISABLE_CCACHE }}" = "true" ]; then
+            CCACHE_TEXT="❌ Disabled / clean-like build"
+          else
+            CCACHE_TEXT="✅ Enabled"
+          fi
+
+          if [ "${{ inputs.SKIP_DISK_CLEANUP }}" = "true" ]; then
+            DISK_CLEANUP_TEXT="❌ Skipped"
+          else
+            DISK_CLEANUP_TEXT="✅ Enabled"
+          fi
+
+          case "${{ inputs.KPM }}" in
+            KPM)
+              KPM_TEXT="✅ KPM"
+              ;;
+            KPN)
+              KPM_TEXT="✅ KPN"
+              ;;
+            N/A)
+              KPM_TEXT="❌ Disabled"
+              ;;
+            *)
+              KPM_TEXT="${{ inputs.KPM }}"
+              ;;
+          esac
+
+          if [ -n "${{ inputs.SUBLEVEL }}" ]; then
+            SUBLEVEL_TEXT="📌 ${{ inputs.SUBLEVEL }}"
+          else
+            SUBLEVEL_TEXT="Default"
+          fi
+
+          # -----------------------------
+          # Write live GitHub summary
+          # -----------------------------
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          # 🧭 Build Plan
+
+          | Item | Value |
+          |------|-------|
+          | Target Device | ${DEVICE_NAME} |
+          | Device Codename | \`${DEVICE_CODENAME}\` |
+          | SoC | \`${CPU}\` |
+          | Android Common Branch | \`common-${KERNEL_BRANCH}\` |
+          | Build Targets | 1 |
+          | Workflow Run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+
+          ## ⚙️ Configuration
+
+          **KSU Config:** 🔀 ReSukiSU, branch \`${KSU_BRANCH}\`, tag \`${KSU_TAG}\`, ${KSU_HASH_TEXT}  
+          **Manager:** ${MANAGER_TEXT}  
+          **KPM Mode:** ${KPM_TEXT}  
+          **Build Timestamp:** ${BUILD_TIME_TEXT}  
+          **Kernel Suffix:** ${SUFFIX_TEXT}  
+          **SUBLEVEL Spoof:** ${SUBLEVEL_TEXT}  
+          **Clean Build / No Ccache:** ${CCACHE_TEXT}  
+          **Create Release:** ${CREATE_RELEASE_TEXT}  
+          **Disk Cleanup:** ${DISK_CLEANUP_TEXT}
+
+          ## 📦 Selected Build Target
+
+          | Device | Codename | SoC | Kernel Branch |
+          |--------|----------|-----|---------------|
+          | ${DEVICE_NAME} | \`${DEVICE_CODENAME}\` | \`${CPU}\` | \`common-${KERNEL_BRANCH}\` |
+
+          ## 🧩 SUSFS Configuration
+
+          | Android / Kernel | SUSFS Ref | Branch | Module ZIP |
+          |------------------|-----------|--------|------------|
+          | \`${SUSFS_KERNEL_LINE}\` | ${SUSFS_REF} | ${SUSFS_BRANCH_TEXT} | \`${SUSFS_MODULE_TEXT}\` |
+
+          ## 🛡️ Feature Flags
+
+          | Feature | Enabled |
+          |---------|---------|
+          | Baseband Guard / BBG | ${BASEBAND_GUARD_TEXT} |
+          | Netfilter Extensions | ${NETFILTER_TEXT} |
+          | BBR + ECN | ${BBR_ECN_TEXT} |
+          | Unicode Bypass Patch | ${UNICODE_BYPASS_TEXT} |
+          | No_5uS Fix | ${XUS_FIX_TEXT} |
+
           EOF
+
+          # -----------------------------
+          # Optional warning section
+          # -----------------------------
+          {
+            echo "## ⚠️ Compatibility Notes"
+            echo ""
+
+            NOTE_COUNT=0
+
+            if [ "${{ inputs.KSU_SETUP_BRANCH }}" = "dev" ]; then
+              echo "- **ReSukiSU dev setup branch selected:** upstream changes may break builds."
+              NOTE_COUNT=$((NOTE_COUNT + 1))
+            fi
+
+            if [ "${{ inputs.SUSFS_DEV }}" = "true" ]; then
+              echo "- **SUSFS dev branch selected:** this may be less stable than the normal branch."
+              NOTE_COUNT=$((NOTE_COUNT + 1))
+            fi
+
+            if [ "${{ inputs.BASEBAND_GUARD }}" = "true" ]; then
+              echo "- **Baseband Guard enabled:** this may affect vendor/security behavior."
+              NOTE_COUNT=$((NOTE_COUNT + 1))
+            fi
+
+            if [ "${{ inputs.NETFILTER }}" = "true" ]; then
+              echo "- **Netfilter enabled:** useful for advanced networking, but it changes kernel networking configuration."
+              NOTE_COUNT=$((NOTE_COUNT + 1))
+            fi
+
+            if [ "${{ inputs.UNICODE_BYPASS }}" = "true" ]; then
+              echo "- **Unicode bypass patch enabled:** patch compatibility depends on the exact kernel source layout."
+              NOTE_COUNT=$((NOTE_COUNT + 1))
+            fi
+
+            if [ "$NOTE_COUNT" -eq 0 ]; then
+              echo "- No extra compatibility warnings for the selected options."
+            fi
+
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Risk Notice
         shell: bash
