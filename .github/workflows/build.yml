@@ -135,12 +135,7 @@ jobs:
         id: set-matrix
         run: |
           if [ "${{ inputs.DEVICE }}" = "all" ]; then
-            MATRIX='{"include":[
-              {"id":"oneplus15","name":"OnePlus 15","codename":"pineapple","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15"},
-              {"id":"oneplus15t","name":"OnePlus 15T","codename":"pineapple","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15T"},
-              {"id":"oneplus15r","name":"OnePlus 15R","codename":"aston","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"OnePlus15R"},
-              {"id":"ace6t","name":"OnePlus Ace 6T","codename":"pineapple","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"Ace6T"}
-            ]}'
+            MATRIX='{"include":[{"id":"oneplus15","name":"OnePlus 15","codename":"pineapple","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15"},{"id":"oneplus15t","name":"OnePlus 15T","codename":"pineapple","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15T"},{"id":"oneplus15r","name":"OnePlus 15R","codename":"aston","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"OnePlus15R"},{"id":"ace6t","name":"OnePlus Ace 6T","codename":"pineapple","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"Ace6T"}]}'
           else
             case "${{ inputs.DEVICE }}" in
               oneplus15)
