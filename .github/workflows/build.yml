@@ -184,8 +184,10 @@ jobs:
       CCACHE_MAXSIZE: 15G
       CCACHE_NOHASHDIR: "true"
       CCACHE_BASEDIR: ${{ github.workspace }}/kernel_workspace
+
       BAZEL_CACHE_DIR: ${{ github.workspace }}/.bazel-cache
       BAZELISK_HOME: ${{ github.workspace }}/.bazelisk
+
       LSM_ENABLED: ${{ inputs.LSM && '1' || '0' }}
       NETFILTER_ENABLED: ${{ inputs.NETFILTER && '1' || '0' }}
       BBR_ECN_ENABLED: ${{ inputs.BBR_ECN && '1' || '0' }}
@@ -203,6 +205,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           {
             echo "DEVICE_ID=${{ matrix.id }}"
             echo "DEVICE_NAME=${{ matrix.name }}"
@@ -291,6 +294,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           {
             echo "BUILD_START_TIME=$(date +%s)"
             echo "BUILD_START_DATE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
@@ -399,8 +403,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+
           /tmp/update_progress.sh 0 5 "Cleaning disk space..."
+
           df -h
+
           sudo rm -rf \
             /opt/hostedtoolcache/go \
             /opt/hostedtoolcache/Ruby \
@@ -408,14 +415,18 @@ jobs:
             /usr/local/lib/android \
             /var/lib/apt/lists/* \
             /var/cache/apt/* || true
+
           sudo docker system prune -af 2>/dev/null || true
+
           df -h
 
       - name: Install Dependencies
         shell: bash
         run: |
           set -euxo pipefail
+
           STEP_START=$(date +%s)
+
           /tmp/update_progress.sh 0 10 "Installing dependencies..."
 
           sudo apt-get update -qq
@@ -434,6 +445,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           git config --global user.name "OnePlus"
           git config --global user.email "OnePlus@qq.com"
           git config --global advice.detachedHead false
@@ -456,7 +468,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           mkdir -p "$CCACHE_DIR" "${RUNNER_TEMP}/ccache-tmp"
+
           ccache --set-config=max_size="${CCACHE_MAXSIZE}"
           ccache --set-config=base_dir="${GITHUB_WORKSPACE}/kernel_workspace"
           ccache --set-config=compression=true
@@ -484,18 +498,19 @@ jobs:
             bazel-${{ runner.os }}-${{ matrix.branch }}-
             bazel-${{ runner.os }}-
 
+      # IMPORTANT:
+      # Do NOT cache kernel_workspace/prebuilts/clang or kernel_workspace/prebuilts/gcc.
+      # Those are repo-managed projects. Restoring them before repo sync causes checkout failures.
       - name: Restore Clang Toolchain Cache
         id: cache-clang-restore
         uses: actions/cache/restore@v4
         with:
           path: |
-            kernel_workspace/prebuilts/clang
-            kernel_workspace/prebuilts/gcc
             ~/.cache/bazel/_bazel_*/*/external/kleaf_clang_toolchain
-          key: clang-toolchain-${{ runner.os }}-${{ matrix.branch }}-${{ hashFiles('.github/workflows/*.yml') }}
+          key: clang-toolchain-bazel-external-${{ runner.os }}-${{ matrix.branch }}-${{ hashFiles('.github/workflows/*.yml') }}
           restore-keys: |
-            clang-toolchain-${{ runner.os }}-${{ matrix.branch }}-
-            clang-toolchain-${{ runner.os }}-
+            clang-toolchain-bazel-external-${{ runner.os }}-${{ matrix.branch }}-
+            clang-toolchain-bazel-external-${{ runner.os }}-
 
       - name: Restore GKI Sources Cache
         id: cache-gki-restore
@@ -513,23 +528,47 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           curl -fL --proto '=https' --tlsv1.2 \
             https://storage.googleapis.com/git-repo-downloads/repo \
             -o "$HOME/repo"
+
           chmod a+x "$HOME/repo"
           sudo mv "$HOME/repo" /usr/local/bin/repo
+
           repo version | head -1 || true
 
       - name: Disk Space Check pre-sync
         shell: bash
         run: |
           set -euo pipefail
+
           df -h
+
           AVAIL_GB=$(df -BG "$GITHUB_WORKSPACE" | awk 'NR==2{gsub("G","",$4); print $4}')
+
           if [ "${AVAIL_GB:-0}" -lt 15 ]; then
             echo "❌ ERROR: Only ${AVAIL_GB}GB free — need at least 15GB before sync"
             exit 1
           fi
+
+      - name: Sanitize Repo Workspace Before Sync
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p kernel_workspace
+          cd kernel_workspace
+
+          echo "🧹 Sanitizing repo workspace before repo sync..."
+
+          rm -rf \
+            prebuilts/clang \
+            prebuilts/gcc \
+            .repo/projects/prebuilts/clang/host/linux-x86.git \
+            .repo/projects/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8.git
+
+          echo "✅ Repo workspace sanitized"
 
       - name: Initialize Repo and Sync
         shell: bash
@@ -543,16 +582,19 @@ jobs:
             local max_attempts=3
             local timeout_s=5
             local attempt=1
+
             while [ "$attempt" -le "$max_attempts" ]; do
               echo "🔄 Attempt $attempt/$max_attempts: $*"
               if "$@"; then
                 return 0
               fi
+
               echo "⏳ Retrying in ${timeout_s}s..."
               sleep "$timeout_s"
               timeout_s=$((timeout_s * 2))
               attempt=$((attempt + 1))
             done
+
             echo "❌ All attempts failed: $*"
             return 1
           }
@@ -599,7 +641,10 @@ jobs:
 
           /tmp/update_progress.sh 1 25 "Downloading/syncing GKI sources..."
 
-          retry_command repo sync \
+          echo "🔄 Primary repo sync with -j${SYNC_JOBS}"
+
+          set +e
+          repo sync \
             -c \
             -j"${SYNC_JOBS}" \
             --prune \
@@ -609,6 +654,31 @@ jobs:
             --current-branch \
             --optimized-fetch \
             --retry-fetches=3
+          SYNC_STATUS=$?
+          set -e
+
+          if [ "$SYNC_STATUS" -ne 0 ]; then
+            echo "⚠️ Primary repo sync failed."
+            echo "🧹 Cleaning problematic prebuilts and retrying with -j1 --fail-fast..."
+
+            rm -rf \
+              prebuilts/clang \
+              prebuilts/gcc \
+              .repo/projects/prebuilts/clang/host/linux-x86.git \
+              .repo/projects/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8.git
+
+            repo sync \
+              -c \
+              -j1 \
+              --fail-fast \
+              --prune \
+              --no-clone-bundle \
+              --no-tags \
+              --force-sync \
+              --current-branch \
+              --optimized-fetch \
+              --retry-fetches=3
+          fi
 
           echo "📁 Repo object cache after sync:"
           du -sh .repo/project-objects .repo/manifests.git 2>/dev/null || true
@@ -627,6 +697,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           cd kernel_workspace
 
           BRANCH=""
@@ -666,6 +737,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           cd kernel_workspace
 
           KANDROID_VERSION="${KANDROID_VERSION:-android16}"
@@ -727,6 +799,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           /tmp/update_progress.sh 2 35 "Adding ReSukiSU..."
 
           cd kernel_workspace
@@ -768,6 +841,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           STEP_START=$(date +%s)
           /tmp/update_progress.sh 2 40 "Applying SUSFS and security patches..."
 
@@ -780,6 +854,7 @@ jobs:
             BR="gki-${KANDROID_VERSION}-${KERNEL_VERSION}$( [ "${{ inputs.SUSFS_DEV }}" = "true" ] && echo "-dev" || true )"
 
             git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$BR" susfs4ksu
+
             cd susfs4ksu
 
             SUSFS_META="${{ inputs.SUSFS_META }}"
@@ -874,6 +949,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           cd kernel_workspace/common
 
           SELINUXFS="security/selinux/selinuxfs.c"
@@ -933,6 +1009,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           /tmp/update_progress.sh 3 50 "Configuring kernel options..."
 
           cd kernel_workspace/common
@@ -1103,6 +1180,7 @@ jobs:
           set -euo pipefail
 
           BUILD_FILE="kernel_workspace/common/BUILD.bazel"
+
           [ -f "$BUILD_FILE" ] || exit 0
 
           sed -i '/protected_module_names_list[[:space:]]*=[[:space:]]*":gki_aarch64_protected_module_names"/d' "$BUILD_FILE"
@@ -1213,6 +1291,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           df -h
 
           AVAIL_GB=$(df -BG "$GITHUB_WORKSPACE" | awk 'NR==2{gsub("G","",$4); print $4}')
@@ -1512,8 +1591,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           suf=""
           [ "${LSM_ENABLED}" = "1" ] && suf="${suf}_LSM"
+
           echo "value=${suf}" >> "$GITHUB_OUTPUT"
 
       - name: Zip AnyKernel3
@@ -1848,14 +1929,14 @@ jobs:
           if-no-files-found: warn
 
       - name: Save Ccache
-        if: ${{ always() && inputs.BUILD_NOCCACHE != true && env.BUILD_SYSTEM_USED == 'Legacy build.sh' }}
+        if: ${{ success() && inputs.BUILD_NOCCACHE != true && env.BUILD_SYSTEM_USED == 'Legacy build.sh' }}
         uses: actions/cache/save@v4
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-${{ matrix.branch }}-${{ matrix.id }}-${{ inputs.KSU_SETUP_BRANCH }}-${{ hashFiles('.github/workflows/*.yml') }}-${{ github.run_id }}
 
       - name: Save Bazel Cache
-        if: ${{ always() && env.BUILD_SYSTEM_USED == 'Bazel/Kleaf' }}
+        if: ${{ success() && env.BUILD_SYSTEM_USED == 'Bazel/Kleaf' }}
         uses: actions/cache/save@v4
         with:
           path: |
@@ -1866,17 +1947,15 @@ jobs:
           key: bazel-${{ runner.os }}-${{ matrix.branch }}-${{ matrix.id }}-${{ hashFiles('.github/workflows/*.yml') }}-${{ github.run_id }}
 
       - name: Save Clang Toolchain Cache
-        if: ${{ always() && steps.cache-clang-restore.outputs.cache-matched-key == '' }}
+        if: ${{ success() && steps.cache-clang-restore.outputs.cache-matched-key == '' }}
         uses: actions/cache/save@v4
         with:
           path: |
-            kernel_workspace/prebuilts/clang
-            kernel_workspace/prebuilts/gcc
             ~/.cache/bazel/_bazel_*/*/external/kleaf_clang_toolchain
-          key: clang-toolchain-${{ runner.os }}-${{ matrix.branch }}-${{ hashFiles('.github/workflows/*.yml') }}
+          key: clang-toolchain-bazel-external-${{ runner.os }}-${{ matrix.branch }}-${{ hashFiles('.github/workflows/*.yml') }}
 
       - name: Save GKI Sources Cache
-        if: ${{ always() && steps.cache-gki-restore.outputs.cache-matched-key == '' }}
+        if: ${{ success() && steps.cache-gki-restore.outputs.cache-matched-key == '' }}
         uses: actions/cache/save@v4
         with:
           path: |
