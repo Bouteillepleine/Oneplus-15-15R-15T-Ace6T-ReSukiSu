@@ -432,8 +432,7 @@ jobs:
           git config --global user.name "OnePlus"
           git config --global user.email "OnePlus@qq.com"
           git config --global advice.detachedHead false
-
-      # ✅ NOUVEAU: Restore Ccache (sans save-always)
+      
       - name: Restore Ccache
         if: ${{ inputs.BUILD_NOCCACHE != true }}
         id: cache-ccache-restore
@@ -468,8 +467,7 @@ jobs:
 
           ccache --zero-stats
           ccache -s
-
-      # ✅ NOUVEAU: Restore Bazel Cache (sans save-always)
+      
       - name: Restore Bazel Cache
         id: cache-bazel-restore
         uses: actions/cache/restore@v4
@@ -485,8 +483,7 @@ jobs:
             bazel-${{ runner.os }}-${{ matrix.device.branch }}-${{ matrix.device.id }}-
             bazel-${{ runner.os }}-${{ matrix.device.branch }}-
             bazel-${{ runner.os }}-
-
-      # ✅ NOUVEAU: Restore Clang Cache (sans save-always)
+      
       - name: Restore Clang Toolchain Cache
         id: cache-clang-restore
         uses: actions/cache/restore@v4
@@ -498,8 +495,7 @@ jobs:
           key: clang-toolchain-${{ runner.os }}-${{ hashFiles('kernel_workspace/common/build.config.constants', 'kernel_workspace/BUILD.bazel') }}
           restore-keys: |
             clang-toolchain-${{ runner.os }}-
-
-      # ✅ NOUVEAU: Restore GKI Cache (sans save-always)
+     
       - name: Restore GKI Sources Cache
         id: cache-gki-restore
         uses: actions/cache/restore@v4
@@ -1221,38 +1217,45 @@ jobs:
           
           STEP_START=$(date +%s)
           /tmp/update_progress.sh 4 65 "Compiling kernel (this may take 5-8 minutes)..."
-
+      
           cd kernel_workspace
-
+      
           ROOT="$PWD"
           NPROC="$(nproc)"
           BUILD_THREADS="$((NPROC * 2))"
-
+      
           export MAKEFLAGS="-j${BUILD_THREADS}"
-
+      
+          echo "🚀 Starting kernel build at $(date)"
+          echo "🔧 CPU cores: ${NPROC} | Build threads: ${BUILD_THREADS}"
+          echo "📱 Device: ${DEVICE_NAME} (${DEVICE_CODENAME})"
+      
           USE_BAZEL=false
-
+      
           if [ -x "tools/bazel" ] && [ -f "common/BUILD.bazel" ]; then
             USE_BAZEL=true
           elif [ -f "build/build.sh" ]; then
             USE_BAZEL=false
           else
+            echo "❌ ERROR: No supported build system found"
             exit 1
           fi
-
+      
+          echo "🏗️ Build system: $( [ "$USE_BAZEL" = "true" ] && echo 'Bazel/Kleaf' || echo 'legacy build.sh' )"
+      
           if [ "$USE_BAZEL" = "true" ]; then
             echo "BUILD_SYSTEM_USED=Bazel/Kleaf" >> "$GITHUB_ENV"
           else
             echo "BUILD_SYSTEM_USED=Legacy build.sh" >> "$GITHUB_ENV"
           fi
-
+      
           USE_CCACHE=0
           CCACHE_EXEC=""
-
+      
           if [ "${BUILD_NOCCACHE_ENABLED}" != "1" ] && [ "$USE_BAZEL" = "false" ]; then
             USE_CCACHE=1
             CCACHE_EXEC="$(command -v ccache)"
-
+      
             export PATH="/usr/lib/ccache:$PATH"
             export USE_CCACHE=1
             export CCACHE_EXEC="${CCACHE_EXEC}"
@@ -1261,22 +1264,35 @@ jobs:
             export CCACHE_NOHASHDIR=true
             export CCACHE_COMPILERCHECK=content
             export CCACHE_SLOPPINESS="include_file_mtime,include_file_ctime,time_macros,file_macro,system_headers,pch_defines"
-
+      
             CLANG_BIN="$(command -v clang)"
             export CC="ccache ${CLANG_BIN}"
             export CXX="ccache $(command -v clang++)"
             export HOSTCC="ccache ${CLANG_BIN}"
             export HOSTCXX="ccache $(command -v clang++)"
-
+      
             ccache -s
+          elif [ "${BUILD_NOCCACHE_ENABLED}" != "1" ] && [ "$USE_BAZEL" = "true" ]; then
+            echo "⚡ Cache status:"
+            echo "  - Bazel cache: ${{ steps.cache-bazel-restore.outputs.cache-hit == 'true' && '✅ Hit' || '❌ Miss' }}"
+            echo "  - Clang toolchain: ${{ steps.cache-clang-restore.outputs.cache-hit == 'true' && '✅ Hit' || '❌ Miss' }}"
+            echo "  - GKI sources: ${{ steps.cache-gki-restore.outputs.cache-hit == 'true' && '✅ Hit' || '❌ Miss' }}"
+            
+            if [ "${{ steps.cache-bazel-restore.outputs.cache-hit }}" = "true" ]; then
+              echo "✅ Cache Bazel restauré: $(du -sh ${BAZEL_CACHE_DIR} 2>/dev/null | cut -f1 || echo 'N/A')"
+            else
+              echo "📦 Premier build, cache Bazel sera créé"
+            fi
+          else
+            echo "🧹 Cache disabled"
           fi
-
+      
           mkdir -p "${BAZEL_CACHE_DIR}/repository" "${BAZELISK_HOME}"
           export BAZELISK_HOME="${BAZELISK_HOME}"
-
+      
           if [ "$USE_BAZEL" = "false" ]; then
-            time env \
-              LTO=none \
+            # ===== BUILD LEGACY =====
+            time env \              
               BUILD_CONFIG=common/build.config.gki.aarch64 \
               USE_CCACHE="${USE_CCACHE}" \
               CCACHE_EXEC="${CCACHE_EXEC}" \
@@ -1287,10 +1303,19 @@ jobs:
               CCACHE_SLOPPINESS="include_file_mtime,include_file_ctime,time_macros,file_macro,system_headers,pch_defines" \
               build/build.sh 2>&1 | tee "$ROOT/build.log"
           else
-            # ✅ CORRIGÉ: Utiliser --local_resources au lieu des options dépréciées
+            # ===== BUILD BAZEL =====
+            
+            # Calculer les ressources disponibles
             TOTAL_RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
             RAM_FOR_BAZEL=$((TOTAL_RAM_MB * 80 / 100))
             
+            echo "💾 System resources:"
+            echo "  - Total RAM: ${TOTAL_RAM_MB} MB"
+            echo "  - RAM for Bazel: ${RAM_FOR_BAZEL} MB (80%)"
+            echo "  - CPU cores: ${NPROC}"
+            echo "  - Build threads: ${BUILD_THREADS}"
+            
+            # ✅ CORRIGÉ: Utiliser --local_resources au lieu des options dépréciées
             BAZEL_ARGS=(
               --config=fast
               --jobs="${BUILD_THREADS}"
@@ -1303,18 +1328,23 @@ jobs:
               --show_result=0
               --verbose_failures
               --remote_download_minimal
-              
-              # ✅ NOUVEAU: Remplacer les options dépréciées
-              --local_resources="cpu=${NPROC},memory=${RAM_FOR_BAZEL}"
               --loading_phase_threads="${NPROC}"
               --action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+              
+              # ✅ NOUVEAU: Format correct pour --local_resources
+              --local_resources="cpu=${NPROC},memory=${RAM_FOR_BAZEL}"
             )
-
+      
+            echo "🔧 Bazel arguments:"
+            printf '  %s\n' "${BAZEL_ARGS[@]}"
+      
             time tools/bazel build \
               "${BAZEL_ARGS[@]}" \
               //common:kernel_aarch64_dist 2>&1 | tee "$ROOT/build.log"
           fi
-
+      
+          echo "✅ Kernel build completed at $(date)"
+      
           if [ "${USE_CCACHE}" = "1" ]; then
             ccache -s
           fi
