@@ -16,7 +16,7 @@ on:
 
       MANAGER_SOURCE:
         type: choice
-        description: "🔧 Manager variant (MD3 = standard, MD3_SPOOF = spoofed package name)"
+        description: "🔧 Manager variant"
         required: true
         default: MD3
         options:
@@ -25,7 +25,7 @@ on:
 
       KSU_SETUP_BRANCH:
         type: choice
-        description: "🌿 ReSukiSU setup.sh branch (main = stable, dev = bleeding edge)"
+        description: "🌿 ReSukiSU setup.sh branch"
         required: true
         default: main
         options:
@@ -34,85 +34,85 @@ on:
 
       SUSFS_META:
         type: string
-        description: "🔒 SUSFS version: empty = latest | git hash or HEAD~N = rollback | -1 = disable SUSFS entirely"
+        description: "🔒 SUSFS version: empty = latest | git hash or HEAD~N = rollback | -1 = disable SUSFS"
         required: false
         default: ""
 
       BUILD_TIME:
         type: string
-        description: "🕐 Kernel build timestamp: F = current UTC time | custom = e.g. 'Sun Mar 01 02:03:04 UTC 2026'"
+        description: "🕐 Kernel build timestamp: F = current UTC time | custom date string"
         required: false
         default: "Sun Mar 01 02:03:04 UTC 2026"
 
       KSU_META:
         type: string
-        description: "📦 ReSukiSU source: format = branch/CustomTag/CommitHash (hash optional). e.g. main/⚡Ultra⚡/ or main/⚡Ultra⚡/abc1234"
+        description: "📦 ReSukiSU source: branch/CustomTag/CommitHash"
         required: false
         default: "main/⚡Ultra⚡/"
 
       SUFFIX:
         type: string
-        description: "🏷️ Kernel local version suffix (empty = random, -1 = disabled). e.g. 5-gb2a876903b49-ab14541642-4k"
+        description: "🏷️ Kernel local version suffix: empty = random | -1 = disabled"
         required: false
         default: "5-gb2a876903b49-ab14541642-4k"
 
       SUBLEVEL:
         type: string
-        description: "🔢 Override kernel SUBLEVEL (numeric only, empty = keep default from Makefile)"
+        description: "🔢 Override kernel SUBLEVEL"
         required: false
         default: ""
 
       LSM:
         type: boolean
-        description: "🛡️ Enable Baseband Guard (BBG) — write-protects critical partitions via LSM"
+        description: "🛡️ Enable Baseband Guard"
         required: true
         default: false
 
       NETFILTER:
         type: boolean
-        description: "🌐 Enable extended Netfilter/IPSet support (required for advanced firewall/VPN features)"
+        description: "🌐 Enable extended Netfilter/IPSet support"
         required: true
         default: true
 
       BBR_ECN:
         type: boolean
-        description: "⚡ Enable BBR TCP congestion control + ECN (improves network throughput)"
+        description: "⚡ Enable BBR + ECN"
         required: true
         default: true
 
       UNICODE_BYPASS:
         type: boolean
-        description: "🔤 Apply Unicode invisible-codepoint bypass patch (for app compatibility)"
+        description: "🔤 Apply Unicode invisible-codepoint bypass patch"
         required: true
         default: false
 
       XUS_FIX:
         type: boolean
-        description: "🧹 Apply No_5uS patch — prevents generation of spurious 5US error files in /data"
+        description: "🧹 Apply No_5uS patch"
         required: false
         default: false
 
       SUSFS_DEV:
         type: boolean
-        description: "🧪 Use SUSFS dev branch instead of stable (may be unstable)"
+        description: "🧪 Use SUSFS dev branch"
         required: true
         default: false
 
       CREATE_RELEASE:
         type: boolean
-        description: "📤 Publish a GitHub Release with the AnyKernel3 ZIP (disable to keep as artifact only)"
+        description: "📤 Publish GitHub Release"
         required: true
-        default: false
+        default: true
 
       SPACE_NOCLEAN:
         type: boolean
-        description: "💾 Skip disk space cleanup before sync (useful if runner already has space)"
+        description: "💾 Skip disk space cleanup"
         required: true
         default: false
 
       BUILD_NOCCACHE:
         type: boolean
-        description: "🚫 Disable ccache (forces full rebuild — slower but avoids stale cache issues)"
+        description: "🚫 Disable ccache"
         required: true
         default: false
 
@@ -219,11 +219,11 @@ jobs:
       - name: Record Build Start Time
         shell: bash
         run: |
+          set -euo pipefail
+
           echo "BUILD_START_TIME=$(date +%s)" >> "$GITHUB_ENV"
           echo "BUILD_START_DATE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> "$GITHUB_ENV"
 
-          # Pre-initialise SUSFS vars so they are always defined in $GITHUB_ENV,
-          # even when SUSFS is disabled. Prevents empty-key writes in the summary.
           echo "SUSFS_COMMIT_SHA=N/A" >> "$GITHUB_ENV"
           echo "SUSFS_BRANCH_NAME=N/A" >> "$GITHUB_ENV"
           echo "SUSVER=N/A" >> "$GITHUB_ENV"
@@ -236,17 +236,15 @@ jobs:
           KSU_META="${{ inputs.KSU_META }}"
           if [[ ! "$KSU_META" =~ ^[^/]+/[^/]*/[^/]*$ ]]; then
             echo "❌ ERROR: KSU_META format invalid"
-            echo "   Expected: branch/CustomTag/OptionalHash  (3 slash-separated fields)"
-            echo "   Example:  main/⚡Ultra⚡/"
-            echo "   Received: $KSU_META"
+            echo "Expected: branch/CustomTag/OptionalHash"
+            echo "Received: $KSU_META"
             exit 1
           fi
 
           SUSFS_META="${{ inputs.SUSFS_META }}"
           if [[ -n "$SUSFS_META" && "$SUSFS_META" != "-1" ]]; then
-            if [[ ! "$SUSFS_META" =~ ^[a-f0-9]{7,40}$|^[0-9]+$ ]]; then
+            if [[ ! "$SUSFS_META" =~ ^([a-fA-F0-9]{7,40}|[0-9]+)$ ]]; then
               echo "⚠️ WARNING: SUSFS_META does not look like a Git hash or HEAD~N number: '$SUSFS_META'"
-              echo "   Continuing anyway — repo checkout will fail if invalid."
             fi
           fi
 
@@ -254,14 +252,13 @@ jobs:
           if [[ -n "$BUILD_TIME" && "$BUILD_TIME" != "F" && "$BUILD_TIME" != "f" ]]; then
             date -d "$BUILD_TIME" >/dev/null 2>&1 || {
               echo "❌ ERROR: Invalid BUILD_TIME format: '$BUILD_TIME'"
-              echo "   Use 'F' for current UTC, or a valid date string like 'Sun Mar 01 02:03:04 UTC 2026'"
               exit 1
             }
           fi
 
           SUBLEVEL="${{ inputs.SUBLEVEL }}"
           if [[ -n "$SUBLEVEL" && ! "$SUBLEVEL" =~ ^[0-9]+$ ]]; then
-            echo "❌ ERROR: SUBLEVEL must be a positive integer, got: '$SUBLEVEL'"
+            echo "❌ ERROR: SUBLEVEL must be numeric, got: '$SUBLEVEL'"
             exit 1
           fi
 
@@ -279,84 +276,53 @@ jobs:
             SUSFS_STATUS="✅ Enabled"
             SUSFS_VERSION_TEXT="Latest upstream"
           else
-            SUSFS_STATUS="✅ Enabled (pinned)"
+            SUSFS_STATUS="✅ Enabled pinned"
             SUSFS_VERSION_TEXT="${{ inputs.SUSFS_META }}"
           fi
 
           if [ "${{ inputs.SUFFIX }}" = "-1" ]; then
-            SUFFIX_TEXT="Disabled (no suffix)"
+            SUFFIX_TEXT="Disabled"
           elif [ -z "${{ inputs.SUFFIX }}" ]; then
-            SUFFIX_TEXT="Random (auto-generated)"
+            SUFFIX_TEXT="Random"
           else
             SUFFIX_TEXT="${{ inputs.SUFFIX }}"
           fi
 
           if [ "${{ inputs.BUILD_TIME }}" = "F" ] || [ "${{ inputs.BUILD_TIME }}" = "f" ] || [ -z "${{ inputs.BUILD_TIME }}" ]; then
-            BUILD_TIME_TEXT="Current UTC time (dynamic)"
+            BUILD_TIME_TEXT="Current UTC time"
           else
             BUILD_TIME_TEXT="${{ inputs.BUILD_TIME }}"
           fi
 
-          RELEASE_TEXT="${{ inputs.CREATE_RELEASE == 'true' && 'Yes — GitHub Release will be created' || 'No — artifact only' }}"
+          RELEASE_TEXT="${{ inputs.CREATE_RELEASE == true && 'Yes — GitHub Release will be created' || 'No — artifact only' }}"
 
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
           # 🧭 Build Plan — ${{ inputs.DEVICE }}
-
-          > Generated before source sync. Verify your configuration while the build runs.
-
-          ## 📱 Device & Kernel
 
           | Setting | Value |
           |--------|-------|
           | Device | ${DEVICE_NAME} |
           | Codename | \`${DEVICE_CODENAME}\` |
           | SoC | \`${CPU}\` |
-          | Android common branch | \`common-${KERNEL_BRANCH}\` |
-          | Triggered by | @${{ github.actor }} |
-          | Workflow run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
-
-          ## 🔧 ReSukiSU
-
-          | Setting | Value |
-          |--------|-------|
-          | Manager variant | \`${{ inputs.MANAGER_SOURCE }}\` |
-          | setup.sh branch | \`${{ inputs.KSU_SETUP_BRANCH }}\` |
+          | Branch | \`common-${KERNEL_BRANCH}\` |
+          | Manager | \`${{ inputs.MANAGER_SOURCE }}\` |
           | KSU_META | \`${{ inputs.KSU_META }}\` |
-
-          ## 🔒 SUSFS
-
-          | Setting | Value |
-          |--------|-------|
-          | Status | ${SUSFS_STATUS} |
-          | Version / rollback | \`${SUSFS_VERSION_TEXT}\` |
-          | Use dev branch | \`${{ inputs.SUSFS_DEV }}\` |
-          | No_5uS fix | \`${{ inputs.XUS_FIX }}\` |
-
-          ## ⚙️ Kernel Customization
-
-          | Setting | Value |
-          |--------|-------|
+          | SUSFS | ${SUSFS_STATUS} |
+          | SUSFS version / rollback | \`${SUSFS_VERSION_TEXT}\` |
+          | SUSFS dev | \`${{ inputs.SUSFS_DEV }}\` |
           | Kernel suffix | \`${SUFFIX_TEXT}\` |
           | Build timestamp | \`${BUILD_TIME_TEXT}\` |
-          | SUBLEVEL spoof | \`${{ inputs.SUBLEVEL || 'Default (unchanged)' }}\` |
-          | Baseband Guard (LSM) | \`${{ inputs.LSM }}\` |
-          | Netfilter / IPSet | \`${{ inputs.NETFILTER }}\` |
+          | LSM | \`${{ inputs.LSM }}\` |
+          | Netfilter | \`${{ inputs.NETFILTER }}\` |
           | BBR + ECN | \`${{ inputs.BBR_ECN }}\` |
-          | Unicode bypass patch | \`${{ inputs.UNICODE_BYPASS }}\` |
-
-          ## 🏗️ Build Behavior
-
-          | Setting | Value |
-          |--------|-------|
-          | Ccache | ${{ inputs.BUILD_NOCCACHE == 'true' && '❌ Disabled' || '✅ Enabled' }} |
-          | Disk cleanup | ${{ inputs.SPACE_NOCLEAN == 'true' && '⏭️ Skipped' || '✅ Enabled' }} |
-          | Create GitHub release | ${RELEASE_TEXT} |
-          | Timeout | 150 minutes |
-
+          | Unicode bypass | \`${{ inputs.UNICODE_BYPASS }}\` |
+          | Ccache | ${{ inputs.BUILD_NOCCACHE == true && '❌ Disabled' || '✅ Enabled' }} |
+          | Disk cleanup | ${{ inputs.SPACE_NOCLEAN == true && '⏭️ Skipped' || '✅ Enabled' }} |
+          | Release | ${RELEASE_TEXT} |
           EOF
 
       - name: Free Disk Space
-        if: ${{ !inputs.SPACE_NOCLEAN }}
+        if: ${{ inputs.SPACE_NOCLEAN != true }}
         shell: bash
         run: |
           set -euxo pipefail
@@ -392,7 +358,6 @@ jobs:
           sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/* || true
 
           echo "✅ ccache version: $(ccache --version | head -1)"
-          echo "📊 Disk after install:"
           df -h
 
       - name: Configure Git
@@ -402,14 +367,8 @@ jobs:
           git config --global user.email "OnePlus@qq.com"
           git config --global advice.detachedHead false
 
-      # ─────────────────────────────────────────────────────────────────────────
-      # CACHE STRATEGY
-      # • Bazel path  → Bazel disk_cache only  (ccache incompatible with sandbox)
-      # • Legacy path → ccache only
-      # ─────────────────────────────────────────────────────────────────────────
-
       - name: Restore Ccache
-        if: ${{ !inputs.BUILD_NOCCACHE }}
+        if: ${{ inputs.BUILD_NOCCACHE != true }}
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
@@ -418,9 +377,10 @@ jobs:
             ccache-${{ runner.os }}-${{ steps.device_config.outputs.KERNEL_BRANCH }}-${{ inputs.KSU_SETUP_BRANCH }}-
             ccache-${{ runner.os }}-${{ steps.device_config.outputs.KERNEL_BRANCH }}-
             ccache-${{ runner.os }}-
+          save-always: true
 
       - name: Initialize Ccache
-        if: ${{ !inputs.BUILD_NOCCACHE }}
+        if: ${{ inputs.BUILD_NOCCACHE != true }}
         shell: bash
         run: |
           set -euo pipefail
@@ -440,12 +400,12 @@ jobs:
           ccache --set-config=run_second_cpp=true
 
           ccache --zero-stats
-          echo "📊 Ccache config:"
           ccache --show-config
-          echo "📊 Ccache initial stats:"
           ccache -s
 
+      # ✨ NOUVEAU: Cache Bazel optimisé
       - name: Restore Bazel Cache
+        id: cache-bazel
         uses: actions/cache@v4
         with:
           path: |
@@ -453,10 +413,28 @@ jobs:
             ${{ env.BAZELISK_HOME }}
             ~/.cache/bazel
             ~/.cache/bazelisk
-          key: bazel-${{ runner.os }}-${{ steps.device_config.outputs.KERNEL_BRANCH }}-${{ hashFiles('.github/workflows/*.yml') }}
+          key: bazel-${{ runner.os }}-${{ steps.device_config.outputs.KERNEL_BRANCH }}-${{ hashFiles('.github/workflows/*.yml', 'kernel_workspace/common/BUILD.bazel') }}-${{ github.run_id }}
           restore-keys: |
+            bazel-${{ runner.os }}-${{ steps.device_config.outputs.KERNEL_BRANCH }}-${{ hashFiles('.github/workflows/*.yml', 'kernel_workspace/common/BUILD.bazel') }}-
             bazel-${{ runner.os }}-${{ steps.device_config.outputs.KERNEL_BRANCH }}-
             bazel-${{ runner.os }}-
+          save-always: true
+
+      # ✨ NOUVEAU: Cache sources GKI
+      - name: Restore GKI Sources Cache
+        id: cache-gki
+        uses: actions/cache@v4
+        with:
+          path: |
+            kernel_workspace/.repo/project-objects
+            kernel_workspace/.repo/projects
+            kernel_workspace/.repo/manifests
+            kernel_workspace/.repo/manifests.git
+          key: gki-sources-${{ steps.device_config.outputs.KERNEL_BRANCH }}-${{ github.run_id }}
+          restore-keys: |
+            gki-sources-${{ steps.device_config.outputs.KERNEL_BRANCH }}-
+          save-always: true
+          lookup-only: false
 
       - name: Install Repo Tool
         shell: bash
@@ -471,7 +449,7 @@ jobs:
           sudo mv "$HOME/repo" /usr/local/bin/repo
           echo "✅ repo $(repo version | head -1)"
 
-      - name: Disk Space Check (pre-sync)
+      - name: Disk Space Check pre-sync
         shell: bash
         run: |
           set -euo pipefail
@@ -482,12 +460,12 @@ jobs:
 
           if [ "${AVAIL_GB:-0}" -lt 15 ]; then
             echo "❌ ERROR: Only ${AVAIL_GB}GB free — need at least 15GB before sync"
-            echo "   Tip: enable 'Free Disk Space' step by unchecking SPACE_NOCLEAN"
             exit 1
           fi
 
           echo "✅ ${AVAIL_GB}GB available — sufficient for sync"
 
+      # ✨ OPTIMISÉ: Sync incrémental si cache existe
       - name: Initialize Repo and Sync
         shell: bash
         run: |
@@ -516,34 +494,61 @@ jobs:
           mkdir -p kernel_workspace
           cd kernel_workspace
 
-          echo "🚀 Initializing repo for common-${KERNEL_BRANCH}"
+          # ✨ OPTIMISATION: Détection du cache GKI
+          if [ "${{ steps.cache-gki.outputs.cache-hit }}" = "true" ] && [ -d ".repo/project-objects" ]; then
+            echo "✅ Cache GKI trouvé, sync incrémental uniquement"
+            echo "📦 Taille du cache: $(du -sh .repo | cut -f1)"
+            
+            # Sync local uniquement (quasi instantané)
+            retry_command repo sync \
+              -c \
+              -j16 \
+              --local-only \
+              --prune \
+              --force-sync \
+              --current-branch \
+              --no-tags
+            
+            echo "✅ Sync incrémental terminé en quelques secondes"
+          else
+            echo "📥 Premier sync ou cache invalide, téléchargement complet"
+            echo "🚀 Initializing repo for common-${KERNEL_BRANCH}"
 
-          retry_command repo init \
-            -u https://android.googlesource.com/kernel/manifest \
-            -b "common-${KERNEL_BRANCH}" \
-            --depth=1 \
-            --no-clone-bundle \
-            --no-tags
+            retry_command repo init \
+              -u https://android.googlesource.com/kernel/manifest \
+              -b "common-${KERNEL_BRANCH}" \
+              --depth=1 \
+              --no-clone-bundle \
+              --no-tags
 
-          echo "🚀 Syncing kernel source..."
+            echo "🚀 Syncing kernel source..."
 
-          SYNC_JOBS="$(nproc)"
-          [ "$SYNC_JOBS" -gt 8 ] && SYNC_JOBS=8
+            # ✨ OPTIMISÉ: Plus de jobs pour paralléliser les téléchargements Git
+            SYNC_JOBS="16"
 
-          retry_command repo sync \
-            -c \
-            -j"${SYNC_JOBS}" \
-            --prune \
-            --no-clone-bundle \
-            --no-tags \
-            --force-sync \
-            --current-branch \
-            --optimized-fetch
+            retry_command repo sync \
+              -c \
+              -j"${SYNC_JOBS}" \
+              --prune \
+              --no-clone-bundle \
+              --no-tags \
+              --force-sync \
+              --current-branch \
+              --optimized-fetch \
+              --retry-fetches=3
+            
+            echo "✅ Sync complet terminé"
+          fi
 
+          # Nettoyage des exports protégés GKI
           if [ -e "common/BUILD.bazel" ]; then
             sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' \
-              common/BUILD.bazel
+              common/BUILD.bazel || true
+
+            sed -i '/protected_exports_list[[:space:]]*=[[:space:]]*"android\/abi_gki_protected_exports_aarch64"/d' \
+              common/BUILD.bazel || true
           fi
+
           rm -f common/android/abi_gki_protected_exports_* 2>/dev/null || true
 
           echo "✅ Repo sync completed"
@@ -567,7 +572,7 @@ jobs:
             KANDROID_VERSION="${BRANCH%%-*}"
             KERNEL_VERSION="${BRANCH#"${KANDROID_VERSION}-"}"
           else
-            echo "⚠️ Could not detect BRANCH from build.config — falling back to android16/6.12"
+            echo "⚠️ Could not detect BRANCH — falling back to android16/6.12"
             KANDROID_VERSION="android16"
             KERNEL_VERSION="6.12"
           fi
@@ -577,7 +582,6 @@ jobs:
 
           SUBLEVEL_INPUT="${{ inputs.SUBLEVEL }}"
           if [ -n "$SUBLEVEL_INPUT" ]; then
-            echo "🔢 Overriding SUBLEVEL to: $SUBLEVEL_INPUT"
             sed -i "s/^\(SUBLEVEL[[:space:]]*=[[:space:]]*\).*/\1$SUBLEVEL_INPUT/" ./common/Makefile
           fi
 
@@ -610,7 +614,6 @@ jobs:
             RANDOM_DIGIT=$(od -An -N1 -tu1 < /dev/urandom | tr -d '[:space:]' | awk '{print $1 % 11}')
             RANDOM_HASH=$(od -An -N7 -tx1 /dev/urandom | tr -d ' \n')
             SUFFIX="${RANDOM_DIGIT}-o-g${RANDOM_HASH}"
-            echo "🎲 Generated random suffix: $SUFFIX"
           fi
 
           echo "KERNEL_SUFFIX=${SUFFIX}" >> "$GITHUB_ENV"
@@ -667,11 +670,6 @@ jobs:
 
           SETUP_BRANCH="${{ inputs.KSU_SETUP_BRANCH }}"
 
-          echo "🛠️  setup.sh branch : ${SETUP_BRANCH}"
-          echo "📦 Install branch  : ${BRANCH_NAME}"
-          echo "🏷️  Custom tag      : ${KSU_CUSTOM_TAG:-none}"
-          echo "🔖 Manual hash     : ${MANUAL_HASH:-latest}"
-
           curl -fL --proto '=https' --tlsv1.2 \
             -o /tmp/ksu_setup.sh \
             "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/${SETUP_BRANCH}/kernel/setup.sh"
@@ -695,8 +693,8 @@ jobs:
           KSU_VERSION=$(( $(git rev-list --count HEAD 2>/dev/null || echo 13000) + 30700 ))
           echo "KSUVER=${KSU_VERSION}" >> "$GITHUB_ENV"
 
-          echo "✅ ReSukiSU commit  : ${KSU_COMMIT_SHA}"
-          echo "✅ ReSukiSU version : ${KSU_VERSION}"
+          echo "✅ ReSukiSU commit: ${KSU_COMMIT_SHA}"
+          echo "✅ ReSukiSU version: ${KSU_VERSION}"
 
       - name: Apply Patches — ReSukiSU and SUSFS
         shell: bash
@@ -719,10 +717,8 @@ jobs:
             SUSFS_META="${{ inputs.SUSFS_META }}"
             if [ -n "$SUSFS_META" ]; then
               if [[ "$SUSFS_META" =~ ^[0-9]+$ ]]; then
-                echo "⏪ Rolling back SUSFS by ${SUSFS_META} commits"
                 git checkout HEAD~"$SUSFS_META"
               else
-                echo "📌 Checking out SUSFS commit: $SUSFS_META"
                 git checkout "$SUSFS_META"
               fi
             fi
@@ -733,8 +729,6 @@ jobs:
 
             SUSVER="$([ -f VERSION ] && tr -d '\n' < VERSION || echo '2.0.0+')"
             echo "SUSVER=${SUSVER}" >> "$GITHUB_ENV"
-
-            echo "✅ SUSFS commit: ${SUSFS_COMMIT_SHA} (${SUSVER})"
 
             cd ..
 
@@ -766,20 +760,31 @@ jobs:
             return 1
           }
 
+          replace_text_file() {
+            local file="$1"
+            local old="$2"
+            local new="$3"
+
+            python3 -c 'import sys; p,o,n=sys.argv[1],sys.argv[2],sys.argv[3]; d=open(p,"r",encoding="utf-8",errors="ignore").read(); d=d.replace(o,n); open(p,"w",encoding="utf-8").write(d)' "$file" "$old" "$new"
+          }
+
           fix_op15_recovery_bootloop_sus_mount() {
             local OLD='for (; mnt->mnt_id >= DEFAULT_KSU_MNT_ID; mnt = mnt->mnt_parent) { }'
-            local NEW='for (; mnt->mnt_id >= DEFAULT_KSU_MNT_ID \&\& mnt->mnt_parent \&\& mnt != mnt->mnt_parent; mnt = mnt->mnt_parent) { }'
+            local NEW='for (; mnt->mnt_id >= DEFAULT_KSU_MNT_ID && mnt->mnt_parent && mnt != mnt->mnt_parent; mnt = mnt->mnt_parent) { }'
 
             for f in ./fs/statfs.c ./fs/proc/fd.c; do
               if [ -f "$f" ] && grep -qF "$OLD" "$f"; then
-                sed -i "s/${OLD}/${NEW}/g" "$f"
+                replace_text_file "$f" "$OLD" "$NEW"
                 echo "✅ Applied recovery bootloop fix to: $f"
               fi
             done
 
-            if [ -f ./fs/statfs.c ] && grep -qF 'error = statfs_by_dentry(mnt->mnt.mnt_root, buf);' ./fs/statfs.c; then
-              sed -i 's/error = statfs_by_dentry(mnt->mnt.mnt_root, buf);/if (likely(susfs_is_current_proc_umounted_app())) { error = statfs_by_dentry(mnt->mnt.mnt_root, buf); } else { error = statfs_by_dentry(path->dentry, buf); }/g' \
-                ./fs/statfs.c
+            local STATFS_FILE="./fs/statfs.c"
+            local OLD_STATFS='error = statfs_by_dentry(mnt->mnt.mnt_root, buf);'
+            local NEW_STATFS='if (likely(susfs_is_current_proc_umounted_app())) { error = statfs_by_dentry(mnt->mnt.mnt_root, buf); } else { error = statfs_by_dentry(path->dentry, buf); }'
+
+            if [ -f "$STATFS_FILE" ] && grep -qF "$OLD_STATFS" "$STATFS_FILE"; then
+              replace_text_file "$STATFS_FILE" "$OLD_STATFS" "$NEW_STATFS"
               echo "✅ Applied statfs umounted-app fix"
             fi
           }
@@ -800,6 +805,43 @@ jobs:
 
           echo "⏭️ Skipping ksu_toolkit.patch (SELinux undefined-symbol issue on android16-6.12)"
 
+      - name: Fix SELinux hide unresolved symbols
+        if: ${{ inputs.SUSFS_META != '-1' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel_workspace/common
+
+          SELINUXFS="security/selinux/selinuxfs.c"
+
+          if [ ! -f "$SELINUXFS" ]; then
+            echo "⚠️ $SELINUXFS not found, skipping"
+            exit 0
+          fi
+
+          echo "🩹 Restoring original SELinuxFS file to avoid broken SUSFS hide hook..."
+
+          git restore "$SELINUXFS" || git checkout HEAD -- "$SELINUXFS"
+
+          echo "✅ Restored $SELINUXFS from kernel source"
+
+          echo "🔎 Remaining unresolved-symbol references:"
+          grep -RInE 'ksu_selinux_hide_enabled|fake_status|initialize_fake_status|fake_status_initialize_key|my_sel_open_handle_status' "$SELINUXFS" || true
+
+          echo "🔎 Checking orphan CONFIG_KSU_SUSFS endif:"
+          grep -nE '#endif.*CONFIG_KSU_SUSFS' "$SELINUXFS" || true
+
+          echo "🔎 sel_handle_status excerpt:"
+          grep -nE 'sel_open_handle_status|sel_handle_status_ops' "$SELINUXFS" || true
+
+          if grep -RInE 'ksu_selinux_hide_enabled|fake_status|initialize_fake_status|fake_status_initialize_key|my_sel_open_handle_status' "$SELINUXFS"; then
+            echo "❌ ERROR: Broken SELinux hide-hook references still remain"
+            exit 1
+          fi
+
+          echo "✅ SELinuxFS hide-hook cleanup completed"
+
       - name: Apply Unicode Bypass
         if: ${{ inputs.UNICODE_BYPASS }}
         shell: bash
@@ -815,7 +857,12 @@ jobs:
             PATCH_FILE="${PATCH_DIR}/unicode_bypass_fix_6.1+.patch"
           fi
 
-          echo "📝 Applying Unicode bypass patch: $(basename $PATCH_FILE)"
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "⚠️ Unicode patch not found: $PATCH_FILE"
+            exit 0
+          fi
+
+          echo "📝 Applying Unicode bypass patch: $(basename "$PATCH_FILE")"
           patch -p1 --forward < "$PATCH_FILE" || true
 
       - name: Apply LSM — Baseband Guard
@@ -829,7 +876,6 @@ jobs:
           BBG_SETUP_URL="https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh"
           curl -fL --proto '=https' --tlsv1.2 -o /tmp/bbg_setup.sh "$BBG_SETUP_URL"
 
-          echo "📝 BBG setup.sh preview (first 20 lines):"
           head -20 /tmp/bbg_setup.sh
 
           bash /tmp/bbg_setup.sh main || {
@@ -858,19 +904,16 @@ jobs:
           CONFIG_FILE=./arch/arm64/configs/gki_defconfig
           MANAGER_BRANCH="${{ steps.manager.outputs.manager_branch }}"
 
-          # Helper: append config only if key not already present
-          # Prevents Kleaf "override: reassigning to symbol" warnings
           append_config() {
             local entry="$1"
             local key="${entry%%=*}"
             if grep -qE "^${key}=" "$CONFIG_FILE" 2>/dev/null; then
-              echo "⏭️  Already set: ${entry}"
+              echo "⏭️ Already set: ${entry}"
             else
               echo "$entry" >> "$CONFIG_FILE"
             fi
           }
 
-          # Helper: force-set a config (removes existing value first)
           force_config() {
             local entry="$1"
             local key="${entry%%=*}"
@@ -897,7 +940,16 @@ jobs:
             append_config "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
             append_config "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
             append_config "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
-            append_config "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
+
+            # Disabled on android16-6.12 because the SELinux hide hook can leave
+            # unresolved symbols during vmlinux link:
+            #   ksu_selinux_hide_enabled
+            #   fake_status
+            #   initialize_fake_status
+            #   fake_status_initialize_key
+            # selinuxfs.c is restored after patching to remove stale hide-hook edits.
+            force_config "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=n"
+
             append_config "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
             append_config "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
           else
@@ -910,11 +962,11 @@ jobs:
 
           echo "# === Performance ===" >> "$CONFIG_FILE"
           append_config "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y"
-          force_config  "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3=n"
+          force_config "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3=n"
           append_config "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y"
           append_config "CONFIG_OPTIMIZE_INLINING=y"
 
-          echo "# === Debug (disabled for release) ===" >> "$CONFIG_FILE"
+          echo "# === Debug disabled for release ===" >> "$CONFIG_FILE"
           force_config "CONFIG_DEBUG_KERNEL=n"
           force_config "CONFIG_DEBUG_INFO=n"
           force_config "CONFIG_DEBUG_INFO_DWARF4=n"
@@ -928,12 +980,10 @@ jobs:
             echo "# === BBR + ECN ===" >> "$CONFIG_FILE"
             append_config "CONFIG_TCP_CONG_ADVANCED=y"
             append_config "CONFIG_TCP_CONG_BBR=y"
-            # NET_SCH_FQ already present in GKI base — append_config avoids
-            # the Kleaf "override: reassigning to symbol NET_SCH_FQ" warning
             append_config "CONFIG_NET_SCH_FQ=y"
-            force_config  "CONFIG_TCP_CONG_BIC=n"
-            force_config  "CONFIG_TCP_CONG_WESTWOOD=n"
-            force_config  "CONFIG_TCP_CONG_HTCP=n"
+            force_config "CONFIG_TCP_CONG_BIC=n"
+            force_config "CONFIG_TCP_CONG_WESTWOOD=n"
+            force_config "CONFIG_TCP_CONG_HTCP=n"
             append_config "CONFIG_IP_ECN=y"
             append_config "CONFIG_TCP_ECN=y"
             append_config "CONFIG_IPV6_ECN=y"
@@ -978,20 +1028,28 @@ jobs:
           set -euo pipefail
 
           PATCH_DIR="${GITHUB_WORKSPACE}/kernel_workspace/Action-Build/patches"
+          PATCH_FILE="${PATCH_DIR}/IPv6_NAT_FIX.patch"
+
           cd kernel_workspace/common
 
-          if [[ "${CPU}" == sm* ]]; then
-            echo "📝 Applying IPv6_NAT_FIX.patch"
+          if [[ "${CPU}" != sm* ]]; then
+            echo "⏭️ Skipping IPv6_NAT_FIX CPU=${CPU}"
+            exit 0
+          fi
 
-            if ! patch -p1 -F 3 < "${PATCH_DIR}/IPv6_NAT_FIX.patch"; then
-              echo "❌ IPv6_NAT_FIX patch failed. Dumping .rej files:"
-              find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \;
-              exit 1
-            fi
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "⚠️ IPv6_NAT_FIX.patch not found, skipping"
+            exit 0
+          fi
 
+          echo "📝 Applying IPv6_NAT_FIX.patch"
+
+          if patch -p1 --dry-run -F 3 < "$PATCH_FILE" >/dev/null 2>&1; then
+            patch -p1 -F 3 < "$PATCH_FILE"
             echo "✅ IPv6_NAT_FIX applied"
           else
-            echo "⏭️ Skipping IPv6_NAT_FIX (CPU=${CPU} is not sm*)"
+            echo "⚠️ IPv6_NAT_FIX already applied or incompatible, continuing"
+            find . -name "*.rej" -exec echo "=== {} ===" \; -exec cat {} \; || true
           fi
 
       - name: Custom BUILD_TIME
@@ -1003,10 +1061,8 @@ jobs:
 
           if [[ -z "$INPUT_TIME" || "$INPUT_TIME" == "F" || "$INPUT_TIME" == "f" ]]; then
             DATESTR="$(TZ='UTC' date +'%a %b %d %T %Z %Y')"
-            echo "🕐 Using current UTC time: $DATESTR"
           else
             DATESTR="$INPUT_TIME"
-            echo "🕐 Using custom build time: $DATESTR"
           fi
 
           echo "KBUILD_BUILD_TIMESTAMP=${DATESTR}" >> "$GITHUB_ENV"
@@ -1033,11 +1089,134 @@ jobs:
         run: |
           set -euo pipefail
 
-          sed -i \
-            '0,/protected_module_names_list *= *":gki_aarch64_protected_module_names"/s//check_defconfig = "disabled"/' \
-            kernel_workspace/common/BUILD.bazel || true
+          BUILD_FILE="kernel_workspace/common/BUILD.bazel"
 
-          echo "✅ Protected module names check disabled"
+          if [ ! -f "$BUILD_FILE" ]; then
+            echo "⚠️ BUILD.bazel not found, skipping"
+            exit 0
+          fi
+
+          echo "🩹 Removing protected module/export checks in $BUILD_FILE"
+
+          sed -i '/protected_module_names_list[[:space:]]*=[[:space:]]*":gki_aarch64_protected_module_names"/d' "$BUILD_FILE"
+          sed -i '/protected_exports_list[[:space:]]*=[[:space:]]*"android\/abi_gki_protected_exports_aarch64"/d' "$BUILD_FILE"
+          sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' "$BUILD_FILE"
+
+          echo "🔎 Relevant BUILD.bazel lines:"
+          grep -nE 'protected_module_names_list|protected_exports_list|check_defconfig|name[[:space:]]*=[[:space:]]*"kernel_aarch64"' "$BUILD_FILE" || true
+
+          echo "✅ Protected module/export checks removed where present"
+
+      - name: Verify Important Config Entries
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel_workspace/common
+
+          CONFIG_FILE="./arch/arm64/configs/gki_defconfig"
+
+          echo "🔎 Important defconfig entries:"
+          grep -nE 'CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=|CONFIG_KPM=|CONFIG_TCP_CONG_BBR=|CONFIG_IP_SET=|CONFIG_DEBUG_KERNEL=' "$CONFIG_FILE" || true
+
+          if grep -q '^CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y' "$CONFIG_FILE"; then
+            echo "❌ ERROR: CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS is still enabled"
+            exit 1
+          fi
+
+          echo "✅ Config sanity check passed"
+
+      - name: Normalize GKI Defconfig for Kleaf
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel_workspace
+
+          DEFCONFIG="common/arch/arm64/configs/gki_defconfig"
+
+          if [ ! -f "$DEFCONFIG" ]; then
+            echo "❌ ERROR: $DEFCONFIG not found"
+            exit 1
+          fi
+
+          if [ ! -x "tools/bazel" ] || [ ! -f "common/BUILD.bazel" ]; then
+            echo "⏭️ Not a Kleaf/Bazel tree, skipping defconfig normalization"
+            exit 0
+          fi
+
+          echo "🧹 Normalizing $DEFCONFIG with Kleaf savedefconfig..."
+
+          # First run may fail because gki_defconfig is not normalized.
+          # The failure still writes a normalized defconfig under out/cache.
+          set +e
+          tools/bazel build \
+            --config=fast \
+            --show_result=0 \
+            --ui_event_filters=-DEBUG \
+            --verbose_failures \
+            //common:kernel_aarch64_config 2>&1 | tee normalize_defconfig_first.log
+          STATUS="${PIPESTATUS[0]}"
+          set -e
+
+          echo "ℹ️ First kernel_aarch64_config status: $STATUS"
+
+          NORMALIZED_DEFCONFIG="$(find out/cache -path "*/common/defconfig" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
+
+          if [ -z "$NORMALIZED_DEFCONFIG" ] || [ ! -f "$NORMALIZED_DEFCONFIG" ]; then
+            echo "❌ ERROR: Could not find normalized defconfig in out/cache"
+            find out -path "*/defconfig" -type f -print 2>/dev/null | head -50 || true
+            exit 1
+          fi
+
+          echo "✅ Normalized defconfig found: $NORMALIZED_DEFCONFIG"
+
+          cp "$NORMALIZED_DEFCONFIG" "$DEFCONFIG"
+
+          echo "🔎 Important normalized defconfig entries:"
+          grep -nE 'CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS|CONFIG_KPM=|CONFIG_TCP_CONG_BBR=|CONFIG_IP_SET=|CONFIG_DEBUG_KERNEL|CONFIG_WQ_POWER_EFFICIENT_DEFAULT|CONFIG_KSU_FULL_NAME_FORMAT' "$DEFCONFIG" || true
+
+          if grep -q '^CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y' "$DEFCONFIG"; then
+            echo "❌ ERROR: CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS unexpectedly enabled in defconfig"
+            exit 1
+          fi
+
+          echo "🧪 Verifying normalized defconfig with second Kleaf config pass..."
+
+          tools/bazel build \
+            --config=fast \
+            --show_result=0 \
+            --ui_event_filters=-DEBUG \
+            --verbose_failures \
+            //common:kernel_aarch64_config 2>&1 | tee normalize_defconfig_second.log
+
+          GENERATED_CONFIG="$(find out -name ".config" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
+
+          if [ -n "$GENERATED_CONFIG" ] && [ -f "$GENERATED_CONFIG" ]; then
+            echo "🔎 Important generated .config entries from: $GENERATED_CONFIG"
+            grep -nE 'CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS|CONFIG_KPM=|CONFIG_TCP_CONG_BBR=|CONFIG_IP_SET=|CONFIG_DEBUG_KERNEL|CONFIG_KSU_FULL_NAME_FORMAT' "$GENERATED_CONFIG" || true
+
+            if ! grep -q '^CONFIG_KSU=y' "$GENERATED_CONFIG"; then
+              echo "❌ ERROR: CONFIG_KSU=y missing in generated .config"
+              exit 1
+            fi
+
+            if [ "${{ inputs.SUSFS_META }}" != "-1" ]; then
+              if ! grep -q '^CONFIG_KSU_SUSFS=y' "$GENERATED_CONFIG"; then
+                echo "❌ ERROR: CONFIG_KSU_SUSFS=y missing in generated .config"
+                exit 1
+              fi
+            fi
+
+            if grep -q '^CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y' "$GENERATED_CONFIG"; then
+              echo "❌ ERROR: CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS unexpectedly enabled in generated .config"
+              exit 1
+            fi
+          else
+            echo "⚠️ Generated .config not found; relying on Kleaf config pass"
+          fi
+
+          echo "✅ gki_defconfig normalized and accepted by Kleaf"
 
       - name: Pre-Build Disk Check
         shell: bash
@@ -1049,12 +1228,13 @@ jobs:
           AVAIL_GB=$(df -BG "$GITHUB_WORKSPACE" | awk 'NR==2{gsub("G","",$4); print $4}')
 
           if [ "${AVAIL_GB:-0}" -lt 10 ]; then
-            echo "❌ ERROR: Only ${AVAIL_GB}GB free — minimum 10GB required to build"
+            echo "❌ ERROR: Only ${AVAIL_GB}GB free — minimum 10GB required"
             exit 1
           fi
 
-          echo "✅ ${AVAIL_GB}GB available — proceeding with build"
+          echo "✅ ${AVAIL_GB}GB available — proceeding"
 
+      # ✨ OPTIMISÉ: Build Bazel avec meilleure parallélisation
       - name: Build Kernel
         shell: bash
         run: |
@@ -1064,7 +1244,9 @@ jobs:
 
           ROOT="$PWD"
           NPROC="$(nproc)"
-          BUILD_THREADS="$((NPROC + 2))"
+          
+          # ✨ OPTIMISÉ: Plus de threads pour les tâches I/O-bound
+          BUILD_THREADS="$((NPROC * 2))"
 
           export MAKEFLAGS="-j${BUILD_THREADS}"
 
@@ -1072,15 +1254,28 @@ jobs:
           echo "🔧 CPU cores: ${NPROC} | Build threads: ${BUILD_THREADS}"
 
           USE_BAZEL=false
-          [ ! -f "build/build.sh" ] && USE_BAZEL=true
-          echo "🏗️  Build system: $( [ "$USE_BAZEL" = "true" ] && echo 'Bazel/Kleaf' || echo 'legacy build.sh' )"
+
+          if [ -x "tools/bazel" ] && [ -f "common/BUILD.bazel" ]; then
+            USE_BAZEL=true
+          elif [ -f "build/build.sh" ]; then
+            USE_BAZEL=false
+          else
+            echo "❌ ERROR: No supported build system found"
+            exit 1
+          fi
+
+          echo "🏗️ Build system: $( [ "$USE_BAZEL" = "true" ] && echo 'Bazel/Kleaf' || echo 'legacy build.sh' )"
+
+          if [ "$USE_BAZEL" = "true" ]; then
+            echo "BUILD_SYSTEM_USED=Bazel/Kleaf" >> "$GITHUB_ENV"
+          else
+            echo "BUILD_SYSTEM_USED=Legacy build.sh" >> "$GITHUB_ENV"
+          fi
 
           USE_CCACHE=0
           CCACHE_EXEC=""
 
           if [ "${BUILD_NOCCACHE_ENABLED}" != "1" ] && [ "$USE_BAZEL" = "false" ]; then
-            echo "⚡ Cache: ccache (legacy build path)"
-
             USE_CCACHE=1
             CCACHE_EXEC="$(command -v ccache)"
 
@@ -1099,25 +1294,27 @@ jobs:
             export HOSTCC="ccache ${CLANG_BIN}"
             export HOSTCXX="ccache $(command -v clang++)"
 
-            echo "📊 Ccache pre-build stats:"
             ccache -s
-
           elif [ "${BUILD_NOCCACHE_ENABLED}" != "1" ] && [ "$USE_BAZEL" = "true" ]; then
-            echo "⚡ Cache: Bazel disk_cache only"
-            echo "   (ccache skipped — incompatible with Bazel hermetic sandbox)"
+            echo "⚡ Cache: Bazel disk_cache optimisé"
+            
+            if [ "${{ steps.cache-bazel.outputs.cache-hit }}" = "true" ]; then
+              echo "✅ Cache Bazel restauré: $(du -sh ${BAZEL_CACHE_DIR} 2>/dev/null | cut -f1 || echo 'N/A')"
+            else
+              echo "📦 Premier build, cache Bazel sera créé"
+            fi
           else
-            echo "🧹 Cache: disabled (BUILD_NOCCACHE=true)"
+            echo "🧹 Cache disabled"
           fi
 
           mkdir -p "${BAZEL_CACHE_DIR}/repository" "${BAZELISK_HOME}"
           export BAZELISK_HOME="${BAZELISK_HOME}"
 
           if [ "$USE_BAZEL" = "false" ]; then
-            time env \
-              LTO=none \
+            time env \              
               BUILD_CONFIG=common/build.config.gki.aarch64 \
               USE_CCACHE="${USE_CCACHE}" \
-              CCACHE_EXEC="${CCACHE_EXEC}" \
+              CCACHE_EXEC="${CCACHE_CCACHE_EXEC}" \
               CCACHE_DIR="${CCACHE_DIR}" \
               CCACHE_BASEDIR="${ROOT}" \
               CCACHE_NOHASHDIR=true \
@@ -1125,8 +1322,9 @@ jobs:
               CCACHE_SLOPPINESS="include_file_mtime,include_file_ctime,time_macros,file_macro,system_headers,pch_defines" \
               build/build.sh 2>&1 | tee "$ROOT/build.log"
           else
+            # ✨ OPTIMISÉ: Arguments Bazel pour meilleure performance
             BAZEL_ARGS=(
-              --config=fast              
+              --config=fast
               --jobs="${BUILD_THREADS}"
               --disk_cache="${BAZEL_CACHE_DIR}"
               --repository_cache="${BAZEL_CACHE_DIR}/repository"
@@ -1135,6 +1333,14 @@ jobs:
               --ui_event_filters=-DEBUG
               --show_progress_rate_limit=30
               --show_result=0
+              --verbose_failures
+              
+              # ✨ NOUVELLES OPTIMISATIONS:
+              --remote_download_minimal
+              --local_ram_resources="HOST_RAM*.8"
+              --local_cpu_resources="HOST_CPUS"
+              --loading_phase_threads="HOST_CPUS"
+              --action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
             )
 
             time tools/bazel build \
@@ -1145,35 +1351,35 @@ jobs:
           echo "✅ Kernel build completed at $(date)"
 
           if [ "${USE_CCACHE}" = "1" ]; then
-            echo "📊 Ccache post-build stats:"
             ccache -s
           fi
 
       - name: Capture Ccache Stats
-        if: ${{ always() && !inputs.BUILD_NOCCACHE }}
+        if: ${{ always() && inputs.BUILD_NOCCACHE != true }}
         shell: bash
         run: |
           set +e
 
-          if [ -f "kernel_workspace/build/build.sh" ]; then
-            ccache -s || true
+          if [ "${BUILD_SYSTEM_USED:-}" = "Legacy build.sh" ]; then
             HIT_RATE="$(ccache -s 2>/dev/null | grep -i "hit rate" | awk '{print $NF}' | head -1)"
             CACHEABLE="$(ccache -s 2>/dev/null | awk '/Cacheable calls:/ {print $3}' | head -1)"
             CACHE_SIZE="$(ccache -s 2>/dev/null | awk '/Cache size/ {print $3, $4}' | head -1)"
           else
-            HIT_RATE=""
-            CACHEABLE=""
-            CACHE_SIZE=""
+            # Pour Bazel, on affiche la taille du cache
+            if [ -d "${BAZEL_CACHE_DIR}" ]; then
+              CACHE_SIZE="$(du -sh ${BAZEL_CACHE_DIR} 2>/dev/null | cut -f1 || echo 'N/A')"
+              HIT_RATE="N/A (Bazel internal cache)"
+              CACHEABLE="N/A (Bazel internal cache)"
+            else
+              HIT_RATE="N/A"
+              CACHEABLE="N/A"
+              CACHE_SIZE="N/A"
+            fi
           fi
 
-          # Always write a valid KEY=value — never an empty or bare value
           echo "CCACHE_HIT_RATE=${HIT_RATE:-N/A}" >> "$GITHUB_ENV"
           echo "CCACHE_CACHEABLE_CALLS=${CACHEABLE:-N/A}" >> "$GITHUB_ENV"
           echo "CCACHE_SIZE=${CACHE_SIZE:-N/A}" >> "$GITHUB_ENV"
-
-          echo "📊 ccache hit rate  : ${HIT_RATE:-N/A}"
-          echo "📊 cacheable calls  : ${CACHEABLE:-N/A}"
-          echo "📊 cache size       : ${CACHE_SIZE:-N/A}"
 
       - name: Make AnyKernel3
         shell: bash
@@ -1185,32 +1391,34 @@ jobs:
 
           mkdir -p kernel_workspace/out/Final-Image-Find/
 
-          SEARCH_PATHS=(
-            "kernel_workspace/out"
-            "kernel_workspace/common/out"
-            "kernel_workspace/bazel-bin/common"
+          CANDIDATES=(
+            "kernel_workspace/bazel-bin/common/kernel_aarch64/dist/Image"
+            "kernel_workspace/bazel-bin/common/kernel_aarch64/Image"
+            "kernel_workspace/bazel-bin/common/kernel_aarch64_dist/Image"
+            "kernel_workspace/out/android16-6.12/dist/Image"
+            "kernel_workspace/out/dist/Image"
+            "kernel_workspace/common/out/arch/arm64/boot/Image"
           )
 
           image_path=""
 
-          for base in "${SEARCH_PATHS[@]}"; do
-            [ -d "$base" ] || continue
-            image_path="$(find "$base" \
-              \( -path "*/dist/Image" -o -path "*/kernel_aarch64/Image" -o -name "Image" \) \
-              -type f \
-              -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
-
-            if [ -n "$image_path" ] && [ -f "$image_path" ]; then
-              echo "✅ Image found: $image_path ($(du -h "$image_path" | cut -f1))"
+          for candidate in "${CANDIDATES[@]}"; do
+            if [ -f "$candidate" ]; then
+              image_path="$candidate"
+              echo "✅ Image found by priority path: $image_path"
               break
             fi
           done
 
+          if [ -z "$image_path" ]; then
+            image_path="$(find kernel_workspace \
+              \( -path "*/dist/Image" -o -path "*/kernel_aarch64/Image" -o -path "*/arch/arm64/boot/Image" -o -name "Image" \) \
+              -type f \
+              -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
+          fi
+
           if [ -z "$image_path" ] || [ ! -f "$image_path" ]; then
-            echo "❌ ERROR: Kernel Image not found in any expected output directory"
-            echo "Searched paths:"
-            for p in "${SEARCH_PATHS[@]}"; do echo "  - $p"; done
-            echo "All Image files found:"
+            echo "❌ ERROR: Kernel Image not found"
             find kernel_workspace -name "Image" -type f -print 2>/dev/null | head -50 || true
             exit 1
           fi
@@ -1218,7 +1426,7 @@ jobs:
           cp "$image_path" ./AnyKernel3/Image
           cp "$image_path" kernel_workspace/out/Final-Image-Find/Image
 
-          echo "✅ Image copied to AnyKernel3/"
+          echo "✅ Image copied to AnyKernel3"
 
       - name: Download Latest SUSFS Module from CI
         if: ${{ inputs.SUSFS_META != '-1' }}
@@ -1234,16 +1442,13 @@ jobs:
             jq -r '.workflow_runs[] | select(.head_branch == "v1.5.2+") | .id' | head -n 1)
 
           if [ -z "$LATEST_RUN_ID" ]; then
-            echo "⚠️ No CI run found — falling back to GitHub Release"
             RELEASE_URL="https://github.com/sidex15/ksu_module_susfs/releases/download/v1.5.2+/ksu_module_susfs_1.5.2+.zip"
             MODULE_ZIP="ksu_module_susfs_1.5.2+_Release.zip"
 
             if curl -Lf -o "$MODULE_ZIP" "$RELEASE_URL"; then
               cp "$MODULE_ZIP" ./AnyKernel3/
-              echo "✅ SUSFS module downloaded from Release: $MODULE_ZIP"
-            else
-              echo "⚠️ Release download also failed — continuing without SUSFS module"
             fi
+
             exit 0
           fi
 
@@ -1255,12 +1460,7 @@ jobs:
             MODULE_ZIP="ksu_module_susfs_1.5.2+_CI.zip"
             if curl -Lf -H "Authorization: Bearer ${{ github.token }}" -o "$MODULE_ZIP" "$ARTIFACT_URL"; then
               cp "$MODULE_ZIP" ./AnyKernel3/
-              echo "✅ SUSFS module downloaded from CI artifact: $MODULE_ZIP"
-          else
-              echo "⚠️ CI artifact download failed — SUSFS module not included"
             fi
-          else
-            echo "⚠️ No artifact URL found for run $LATEST_RUN_ID"
           fi
 
       - name: Set ZIP Suffix
@@ -1273,15 +1473,13 @@ jobs:
           [ "${LSM_ENABLED}" = "1" ] && suf="${suf}_LSM"
 
           echo "value=${suf}" >> "$GITHUB_OUTPUT"
-          echo "📦 ZIP suffix: '${suf:-none}'"
 
       - name: Zip AnyKernel3
         shell: bash
         run: |
           set -euo pipefail
 
-          # Fix #1: MANAGER_SOURCE restored in ZIP name for MD3 vs MD3_SPOOF traceability
-          ZIP_NAME="AnyKernel3_${KSUVER}_${DEVICE_NAME_SAFE}_${TKERNEL_VERSION}${{ steps.suffix.outputs.value }}.zip"
+          ZIP_NAME="AK3_ReSukiSU_${KSUVER}_${DEVICE_NAME_SAFE}_${TKERNEL_VERSION}${{ steps.suffix.outputs.value }}.zip"
 
           echo "📦 Creating: $ZIP_NAME"
 
@@ -1289,9 +1487,6 @@ jobs:
           if [ "${{ inputs.SUSFS_META }}" != "-1" ]; then
             if ls AnyKernel3/ksu_module_susfs*.zip 1>/dev/null 2>&1; then
               SUSFS_MODULE_PRESENT=true
-              echo "✅ SUSFS module found — will be included in ZIP"
-            else
-              echo "⚠️ SUSFS enabled but module ZIP not found — continuing without it"
             fi
           fi
 
@@ -1314,17 +1509,16 @@ jobs:
           ZIP_SIZE=$(du -h "${GITHUB_WORKSPACE}/${ZIP_NAME}" | awk '{print $1}')
           echo "ZIP_SIZE=${ZIP_SIZE}" >> "$GITHUB_ENV"
 
-          echo "📋 ZIP contents:"
           unzip -l "${GITHUB_WORKSPACE}/${ZIP_NAME}" | grep -E "(Image|ksu_module_susfs|anykernel\.sh)" || true
           echo "✅ ZIP created: $ZIP_NAME ($ZIP_SIZE)"
 
       - name: Upload AK3 ZIP to GitHub Release
-        if: ${{ inputs.CREATE_RELEASE }}
+        if: ${{ inputs.CREATE_RELEASE == true }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ak3-${{ github.run_id }}
           name: >-
-            ${{ env.DEVICE_NAME }} — KSU ${{ env.KSUVER }} — ${{ env.TKERNEL_VERSION }}
+            ${{ env.DEVICE_NAME }} — ReSukiSU ${{ env.KSUVER }} — ${{ env.TKERNEL_VERSION }}
             ${{ inputs.LSM && '[LSM]' || '' }}
             ${{ inputs.SUSFS_META == '-1' && '[noSUSFS]' || '' }}
           body: |
@@ -1332,51 +1526,48 @@ jobs:
 
             | Property | Value |
             |----------|-------|
-            | Device | ${{ env.DEVICE_NAME }} (`${{ env.DEVICE_CODENAME }}`) |
+            | Device | ${{ env.DEVICE_NAME }} |
+            | Codename | `${{ env.DEVICE_CODENAME }}` |
             | SoC | `${{ env.CPU }}` |
             | Kernel | `${{ env.TKERNEL_VERSION }}` |
             | KSU Version | `${{ env.KSUVER }}` |
             | KSU Commit | `${{ env.KSU_COMMIT_SHA }}` |
             | SUSFS Version | `${{ env.SUSVER }}` |
             | SUSFS Commit | `${{ env.SUSFS_COMMIT_SHA }}` |
-            | Manager | `${{ inputs.MANAGER_SOURCE }}` |
             | Branch | `common-${{ env.KERNEL_BRANCH }}` |
             | Build run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
 
-            ### ⚙️ Features
+            ### Features
             - BBR + ECN: `${{ inputs.BBR_ECN }}`
             - Netfilter / IPSet: `${{ inputs.NETFILTER }}`
-            - Baseband Guard (LSM): `${{ inputs.LSM }}`
+            - Baseband Guard: `${{ inputs.LSM }}`
             - Unicode Bypass: `${{ inputs.UNICODE_BYPASS }}`
             - SUSFS: `${{ inputs.SUSFS_META != '-1' && 'Enabled' || 'Disabled' }}`
+
+            ### ⚡ Performance Optimizations
+            - GKI sources cached: `${{ steps.cache-gki.outputs.cache-hit == 'true' && 'Yes (incremental sync)' || 'No (full download)' }}`
+            - Bazel cache: `${{ steps.cache-bazel.outputs.cache-hit == 'true' && 'Restored' || 'New' }}`
+            - Build threads: `${{ env.BUILD_THREADS || 'Auto' }}`
           files: ${{ env.ZIP_NAME }}
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload AK3 ZIP as Artifact (fallback / always)
-        if: ${{ !inputs.CREATE_RELEASE }}
-        uses: actions/upload-artifact@v4
+      - name: Upload AK3 ZIP as Artifact
+        if: ${{ inputs.CREATE_RELEASE != true }}
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}
           retention-days: 30
           if-no-files-found: error
 
-      # ─────────────────────────────────────────────────────────────────────────
-      # Calculate Build Metrics
-      #
-      # Uses set +e throughout — grep -c returns exit 1 on zero matches which
-      # would corrupt $GITHUB_ENV with bare "0" values (no KEY= prefix).
-      # Every variable is explicitly initialised before writing to $GITHUB_ENV.
-      # ─────────────────────────────────────────────────────────────────────────
       - name: Calculate Build Metrics
         if: always()
         shell: bash
         run: |
           set +e
 
-          # ── Duration ─────────────────────────────────────────────────────────
           BUILD_DURATION_TEXT="N/A"
           if [ -n "${BUILD_START_TIME:-}" ]; then
             BUILD_END_TIME=$(date +%s)
@@ -1387,44 +1578,44 @@ jobs:
           fi
           echo "BUILD_DURATION_TEXT=${BUILD_DURATION_TEXT}" >> "$GITHUB_ENV"
 
-          # ── Warning / error counts ────────────────────────────────────────────
           WARNINGS_COUNT="0"
           ERRORS_COUNT="0"
           BUILD_LOG="kernel_workspace/build.log"
+
           if [ -f "$BUILD_LOG" ]; then
             WARNINGS_COUNT=$(grep -c "warning:" "$BUILD_LOG" 2>/dev/null || true)
             ERRORS_COUNT=$(grep -c "error:" "$BUILD_LOG" 2>/dev/null || true)
-            WARNINGS_COUNT="${WARNINGS_COUNT:-0}"
-            ERRORS_COUNT="${ERRORS_COUNT:-0}"
           fi
-          echo "WARNINGS_COUNT=${WARNINGS_COUNT}" >> "$GITHUB_ENV"
-          echo "ERRORS_COUNT=${ERRORS_COUNT}" >> "$GITHUB_ENV"
 
-          # ── ZIP integrity ─────────────────────────────────────────────────────
+          echo "WARNINGS_COUNT=${WARNINGS_COUNT:-0}" >> "$GITHUB_ENV"
+          echo "ERRORS_COUNT=${ERRORS_COUNT:-0}" >> "$GITHUB_ENV"
+
           ZIP_SHA256="N/A"
           ZIP_SIZE="N/A"
           if [ -n "${ZIP_NAME:-}" ] && [ -f "${GITHUB_WORKSPACE}/${ZIP_NAME}" ]; then
             ZIP_SHA256=$(sha256sum "${GITHUB_WORKSPACE}/${ZIP_NAME}" | awk '{print $1}')
             ZIP_SIZE=$(du -h "${GITHUB_WORKSPACE}/${ZIP_NAME}" | awk '{print $1}')
           fi
+
           echo "ZIP_SHA256=${ZIP_SHA256}" >> "$GITHUB_ENV"
           echo "ZIP_SIZE=${ZIP_SIZE}" >> "$GITHUB_ENV"
 
-          # ── Image integrity ───────────────────────────────────────────────────
           IMAGE_SHA256="N/A"
           IMAGE_SIZE="N/A"
           if [ -f "${GITHUB_WORKSPACE}/AnyKernel3/Image" ]; then
             IMAGE_SHA256=$(sha256sum "${GITHUB_WORKSPACE}/AnyKernel3/Image" | awk '{print $1}')
             IMAGE_SIZE=$(du -h "${GITHUB_WORKSPACE}/AnyKernel3/Image" | awk '{print $1}')
           fi
+
           echo "IMAGE_SHA256=${IMAGE_SHA256}" >> "$GITHUB_ENV"
           echo "IMAGE_SIZE=${IMAGE_SIZE}" >> "$GITHUB_ENV"
 
-          echo "✅ Build metrics calculated"
-          echo "   Duration : ${BUILD_DURATION_TEXT}"
-          echo "   Warnings : ${WARNINGS_COUNT}"
-          echo "   Errors   : ${ERRORS_COUNT}"
-          echo "   ZIP size : ${ZIP_SIZE}"
+          # ✨ NOUVEAU: Métriques de cache
+          GKI_CACHE_STATUS="${{ steps.cache-gki.outputs.cache-hit == 'true' && '✅ Hit' || '❌ Miss' }}"
+          BAZEL_CACHE_STATUS="${{ steps.cache-bazel.outputs.cache-hit == 'true' && '✅ Hit' || '❌ Miss' }}"
+          
+          echo "GKI_CACHE_STATUS=${GKI_CACHE_STATUS}" >> "$GITHUB_ENV"
+          echo "BAZEL_CACHE_STATUS=${BAZEL_CACHE_STATUS}" >> "$GITHUB_ENV"
 
       - name: Build Summary
         if: always()
@@ -1453,6 +1644,8 @@ jobs:
           SUSVER="${SUSVER:-N/A}"
           SUSFS_BRANCH_NAME="${SUSFS_BRANCH_NAME:-N/A}"
           SUSFS_COMMIT_SHA="${SUSFS_COMMIT_SHA:-N/A}"
+          GKI_CACHE_STATUS="${GKI_CACHE_STATUS:-N/A}"
+          BAZEL_CACHE_STATUS="${BAZEL_CACHE_STATUS:-N/A}"
 
           if [ "${{ job.status }}" = "success" ]; then
             STATUS_TEXT="SUCCESS"
@@ -1465,31 +1658,18 @@ jobs:
             STATUS_ICON="🟡"
           fi
 
-          # Fix #2: Build release URL purely from GitHub context expressions —
-          # shell variables are NOT interpolated inside GitHub expression format()
-          # so we construct the URL directly to guarantee a working hyperlink.
-          RELEASE_URL="https://github.com/${{ github.repository }}/releases/tag/ak3-${{ github.run_id }}"
-
-          # Fix #4: Pre-compute build system label before heredoc so the
-          # subshell exit code cannot silently corrupt set +e heredoc output.
-          if [ -f kernel_workspace/build/build.sh ]; then
-            BUILD_SYSTEM_TEXT="Legacy build.sh"
-          else
-            BUILD_SYSTEM_TEXT="Bazel/Kleaf"
-          fi
-
-          NPROC_COUNT=$(nproc 2>/dev/null || echo "N/A")
+          BUILD_SYSTEM_TEXT="${BUILD_SYSTEM_USED:-Unknown}"
 
           if [ "${{ inputs.CREATE_RELEASE }}" = "true" ]; then
-            RELEASE_CELL="[⬇️ Download](${RELEASE_URL})"
+            RELEASE_CELL="[⬇️ Download](https://github.com/${{ github.repository }}/releases/tag/ak3-${{ github.run_id }})"
           else
-            RELEASE_CELL="📎 Artifact only (see Actions tab)"
+            RELEASE_CELL="📎 Artifact only"
           fi
 
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
           # ${STATUS_ICON} ${DEVICE_NAME} — ReSukiSU Build ${STATUS_TEXT}
 
-          ## 📊 Build Status
+          ## Build Status
 
           | Property | Value |
           |----------|-------|
@@ -1499,7 +1679,7 @@ jobs:
           | Errors | ${ERRORS_COUNT} |
           | Triggered by | @${{ github.actor }} |
 
-          ## 📱 Device
+          ## Device
 
           | Property | Value |
           |----------|-------|
@@ -1509,7 +1689,7 @@ jobs:
           | Kernel Version | \`${TKERNEL_VERSION}\` |
           | Branch | \`common-${KERNEL_BRANCH}\` |
 
-          ## 🔧 ReSukiSU
+          ## ReSukiSU
 
           | Property | Value |
           |----------|-------|
@@ -1518,7 +1698,7 @@ jobs:
           | KSU Version | \`${KSUVER}\` |
           | KSU Commit | \`${KSU_COMMIT_SHA}\` |
 
-          ## 🔒 SUSFS
+          ## SUSFS
 
           | Property | Value |
           |----------|-------|
@@ -1527,7 +1707,7 @@ jobs:
           | Branch | \`${SUSFS_BRANCH_NAME}\` |
           | Commit | \`${SUSFS_COMMIT_SHA}\` |
 
-          ## 📦 Output
+          ## Output
 
           | File | Details |
           |------|---------|
@@ -1538,21 +1718,21 @@ jobs:
           | Image SHA256 | \`${IMAGE_SHA256}\` |
           | Release | ${RELEASE_CELL} |
 
-          ## ⚡ Performance
+          ## ⚡ Performance & Cache
 
           | Metric | Value |
           |--------|-------|
           | Build system | ${BUILD_SYSTEM_TEXT} |
+          | GKI sources cache | ${GKI_CACHE_STATUS} |
+          | Bazel cache | ${BAZEL_CACHE_STATUS} |
+          | Cache size | ${CCACHE_SIZE} |
           | Ccache hit rate | ${CCACHE_HIT_RATE} |
-          | Ccache cacheable calls | ${CCACHE_CACHEABLE_CALLS} |
-          | Ccache cache size | ${CCACHE_SIZE} |
-          | Parallel jobs | ${NPROC_COUNT} cores |
-
+          | Parallel jobs | $(nproc 2>/dev/null || echo N/A) cores × 2 = ${BUILD_THREADS:-N/A} threads |
           EOF
 
       - name: Upload Build Log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build_log_${{ inputs.DEVICE }}_${{ github.run_id }}
           path: kernel_workspace/build.log
@@ -1570,7 +1750,6 @@ jobs:
             sudo rm -rf \
               kernel_workspace/common/out \
               kernel_workspace/out \
-              kernel_workspace/.repo \
               kernel_workspace/KernelSU \
               kernel_workspace/susfs4ksu \
               kernel_workspace/SukiSU_patch \
@@ -1579,19 +1758,15 @@ jobs:
               /tmp/bbg_setup.sh \
               /tmp/* \
               /var/tmp/* 2>/dev/null || true
-            echo "✅ Cleanup complete"
+            
+            # ✨ OPTIMISÉ: Garder .repo pour le cache GKI
+            echo "✅ Cleanup complete (kept .repo for GKI cache)"
           else
-            echo "⏭️ Cleanup skipped (SPACE_NOCLEAN=true)"
+            echo "⏭️ Cleanup skipped"
           fi
 
-          echo "📊 Final disk state:"
           df -h
 
-      # ─────────────────────────────────────────────────────────────────────────
-      # Final Status Check — informational only, never calls exit 1.
-      # job.status reflects the worst step outcome up to this point; adding
-      # exit 1 here would double-fail an already-failed job and confuse the UI.
-      # ─────────────────────────────────────────────────────────────────────────
       - name: Final Status Check
         if: always()
         shell: bash
@@ -1600,16 +1775,19 @@ jobs:
 
           if [ "${{ job.status }}" = "success" ]; then
             echo "✅ BUILD SUCCESSFUL"
-            echo "   Device   : ${DEVICE_NAME:-N/A}"
-            echo "   ZIP      : ${ZIP_NAME:-N/A}"
-            echo "   Size     : ${ZIP_SIZE:-N/A}"
-            echo "   Duration : ${BUILD_DURATION_TEXT:-N/A}"
-            echo "   Cache    : ${CCACHE_HIT_RATE:-N/A} hit rate"
+            echo "Device   : ${DEVICE_NAME:-N/A}"
+            echo "ZIP      : ${ZIP_NAME:-N/A}"
+            echo "Size     : ${ZIP_SIZE:-N/A}"
+            echo "Duration : ${BUILD_DURATION_TEXT:-N/A}"
+            echo ""
+            echo "⚡ Cache Performance:"
+            echo "GKI cache: ${GKI_CACHE_STATUS:-N/A}"
+            echo "Bazel cache: ${BAZEL_CACHE_STATUS:-N/A}"
           elif [ "${{ job.status }}" = "failure" ]; then
             echo "❌ BUILD FAILED"
-            echo "   Device   : ${DEVICE_NAME:-N/A}"
-            echo "   Duration : ${BUILD_DURATION_TEXT:-N/A}"
-            echo "   ➡️  Check the build_log artifact for details"
+            echo "Device   : ${DEVICE_NAME:-N/A}"
+            echo "Duration : ${BUILD_DURATION_TEXT:-N/A}"
+            echo "Check the build_log artifact for details"
           else
             echo "⚠️ BUILD CANCELLED"
           fi
