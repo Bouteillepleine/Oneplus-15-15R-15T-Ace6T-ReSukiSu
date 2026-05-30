@@ -119,6 +119,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: resukisu-${{ github.ref }}-${{ github.run_id }}
@@ -130,10 +131,14 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+
     steps:
       - name: Set Matrix Configuration
         id: set-matrix
+        shell: bash
         run: |
+          set -euo pipefail
+
           if [ "${{ inputs.DEVICE }}" = "all" ]; then
             MATRIX='{"include":[{"id":"oneplus15","name":"OnePlus 15","codename":"pineapple","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15"},{"id":"oneplus15t","name":"OnePlus 15T","codename":"pineapple","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15T"},{"id":"oneplus15r","name":"OnePlus 15R","codename":"aston","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"OnePlus15R"},{"id":"ace6t","name":"OnePlus Ace 6T","codename":"pineapple","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"Ace6T"}]}'
           else
@@ -150,16 +155,19 @@ jobs:
               ace6t)
                 MATRIX='{"include":[{"id":"ace6t","name":"OnePlus Ace 6T","codename":"pineapple","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"Ace6T"}]}'
                 ;;
+              *)
+                echo "❌ Unknown device: ${{ inputs.DEVICE }}"
+                exit 1
+                ;;
             esac
           fi
-          
+
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-          echo "📊 Build matrix:"
           echo "$MATRIX" | jq .
 
   build:
     name: >-
-      ${{ matrix.device.name }}
+      ${{ matrix.name }}
       ${{ inputs.LSM && '[LSM]' || '' }}
       ${{ inputs.SUSFS_META == '-1' && '[noSUSFS]' || '' }}
 
@@ -196,28 +204,37 @@ jobs:
       - name: Set Matrix Variables
         shell: bash
         run: |
-          echo "DEVICE_NAME=${{ matrix.device.name }}" >> "$GITHUB_ENV"
-          echo "DEVICE_CODENAME=${{ matrix.device.codename }}" >> "$GITHUB_ENV"
-          echo "CPU=${{ matrix.device.cpu }}" >> "$GITHUB_ENV"
-          echo "KERNEL_BRANCH=${{ matrix.device.branch }}" >> "$GITHUB_ENV"
-          echo "DEVICE_NAME_SAFE=${{ matrix.device.safe_name }}" >> "$GITHUB_ENV"
-          
+          set -euo pipefail
+
+          {
+            echo "DEVICE_ID=${{ matrix.id }}"
+            echo "DEVICE_NAME=${{ matrix.name }}"
+            echo "DEVICE_CODENAME=${{ matrix.codename }}"
+            echo "CPU=${{ matrix.cpu }}"
+            echo "KERNEL_BRANCH=${{ matrix.branch }}"
+            echo "DEVICE_NAME_SAFE=${{ matrix.safe_name }}"
+          } >> "$GITHUB_ENV"
+
           echo "✅ Matrix variables configured:"
-          echo "  Device: ${{ matrix.device.name }}"
-          echo "  Codename: ${{ matrix.device.codename }}"
-          echo "  CPU: ${{ matrix.device.cpu }}"
-          echo "  Branch: common-${{ matrix.device.branch }}"
-          echo "  Safe name: ${{ matrix.device.safe_name }}"      
+          echo "  Device: ${{ matrix.name }}"
+          echo "  Codename: ${{ matrix.codename }}"
+          echo "  CPU: ${{ matrix.cpu }}"
+          echo "  Branch: common-${{ matrix.branch }}"
+          echo "  Safe name: ${{ matrix.safe_name }}"
 
       - name: Initialize Progress Tracker
         shell: bash
         run: |
+          set -euo pipefail
+
           cat > /tmp/update_progress.sh <<'SCRIPT'
           #!/bin/bash
-          STEP=$1
-          PERCENT=$2
-          MESSAGE=$3
-          
+          set +e
+
+          STEP="${1:-0}"
+          PERCENT="${2:-0}"
+          MESSAGE="${3:-Working...}"
+
           STEPS=(
             "Environment setup"
             "Sync GKI sources"
@@ -226,80 +243,63 @@ jobs:
             "Build kernel"
             "Package ZIP"
           )
-          
+
           FILLED=$((PERCENT / 5))
           EMPTY=$((20 - FILLED))
-          BAR=$(printf '█%.0s' $(seq 1 $FILLED))$(printf '░%.0s' $(seq 1 $EMPTY))
-          
+          BAR="$(printf '█%.0s' $(seq 1 "$FILLED" 2>/dev/null))$(printf '░%.0s' $(seq 1 "$EMPTY" 2>/dev/null))"
+
           if [ -n "${BUILD_START_TIME:-}" ]; then
             ELAPSED=$(($(date +%s) - BUILD_START_TIME))
             ELAPSED_MIN=$((ELAPSED / 60))
             ELAPSED_SEC=$((ELAPSED % 60))
-            
+
             if [ "$PERCENT" -gt 0 ]; then
               TOTAL_EST=$((ELAPSED * 100 / PERCENT))
               REMAINING=$((TOTAL_EST - ELAPSED))
+              [ "$REMAINING" -lt 0 ] && REMAINING=0
               ETA_MIN=$((REMAINING / 60))
               ETA_SEC=$((REMAINING % 60))
               ETA_TEXT="${ETA_MIN}m ${ETA_SEC}s"
             else
               ETA_TEXT="Calculating..."
             fi
-            
-            ELAPSED_TEXT="${ELAPSED_MIN}m ${ELAPSED_SEC}s"
+
+            ELAPSED_TEXT="${ELAPED_MIN:-$ELAPSED_MIN}m ${ELAPSED_SEC}s"
           else
             ELAPSED_TEXT="0m 0s"
-            ETA_TEXT="~12m"
+            ETA_TEXT="Calculating..."
           fi
-          
-          TABLE="| Step | Status | Duration |\n|------|--------|----------|\n"
-          for i in "${!STEPS[@]}"; do
-            if [ $i -lt $STEP ]; then
-              STATUS="✅ Complete"
-              DURATION="${STEP_DURATIONS[$i]:-N/A}"
-            elif [ $i -eq $STEP ]; then
-              STATUS="🔄 In progress..."
-              DURATION="-"
-            else
-              STATUS="⏳ Pending"
-              DURATION="-"
-            fi
-            TABLE+="| ${STEPS[$i]} | $STATUS | $DURATION |\n"
-          done
-          
-          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          
-          ---
-          
-          ## ⏱️ Build Progress — $(date -u '+%H:%M:%S UTC')
-          
-          \`\`\`
-          [$BAR] $PERCENT% - $MESSAGE
-          \`\`\`
-          
-          **Elapsed:** $ELAPSED_TEXT | **ETA:** $ETA_TEXT
-          
-          $(echo -e "$TABLE")
-          EOF
+
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "## ⏱️ Build Progress — $(date -u '+%H:%M:%S UTC')"
+            echo ""
+            echo '```'
+            echo "[$BAR] $PERCENT% - $MESSAGE"
+            echo '```'
+            echo ""
+            echo "**Elapsed:** $ELAPSED_TEXT | **ETA:** $ETA_TEXT"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
           SCRIPT
-          
+
           chmod +x /tmp/update_progress.sh
-          
-          declare -gA STEP_DURATIONS
-          export STEP_DURATIONS
 
       - name: Record Build Start Time
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "BUILD_START_TIME=$(date +%s)" >> "$GITHUB_ENV"
-          echo "BUILD_START_DATE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> "$GITHUB_ENV"
+          {
+            echo "BUILD_START_TIME=$(date +%s)"
+            echo "BUILD_START_DATE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "SUSFS_COMMIT_SHA=N/A"
+            echo "SUSFS_BRANCH_NAME=N/A"
+            echo "SUSVER=N/A"
+          } >> "$GITHUB_ENV"
 
-          echo "SUSFS_COMMIT_SHA=N/A" >> "$GITHUB_ENV"
-          echo "SUSFS_BRANCH_NAME=N/A" >> "$GITHUB_ENV"
-          echo "SUSVER=N/A" >> "$GITHUB_ENV"
-          
           /tmp/update_progress.sh 0 0 "Starting build..."
 
       - name: Validate Inputs
@@ -310,6 +310,8 @@ jobs:
           KSU_META="${{ inputs.KSU_META }}"
           if [[ ! "$KSU_META" =~ ^[^/]+/[^/]*/[^/]*$ ]]; then
             echo "❌ ERROR: KSU_META format invalid"
+            echo "Expected: branch/CustomTag/OptionalHash"
+            echo "Received: $KSU_META"
             exit 1
           fi
 
@@ -369,8 +371,8 @@ jobs:
           RELEASE_TEXT="${{ inputs.CREATE_RELEASE == true && 'Yes — GitHub Release will be created' || 'No — artifact only' }}"
 
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          # 🚀 Build Started — ${{ matrix.device.name }}
-          
+          # 🚀 Build Started — ${DEVICE_NAME}
+
           **Started at:** ${BUILD_START_DATE}
 
           | Setting | Value |
@@ -398,8 +400,10 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          
+
           /tmp/update_progress.sh 0 5 "Cleaning disk space..."
+
+          df -h
 
           sudo rm -rf \
             /opt/hostedtoolcache/go \
@@ -411,11 +415,15 @@ jobs:
 
           sudo docker system prune -af 2>/dev/null || true
 
+          df -h
+
       - name: Install Dependencies
         shell: bash
         run: |
           set -euxo pipefail
-          
+
+          STEP_START=$(date +%s)
+
           /tmp/update_progress.sh 0 10 "Installing dependencies..."
 
           sudo apt-get update -qq
@@ -426,14 +434,15 @@ jobs:
 
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/* || true
-          
-          STEP_START=$(date +%s)
+
+          echo "DURATION_ENV_SETUP=$(($(date +%s) - STEP_START))s" >> "$GITHUB_ENV"
           /tmp/update_progress.sh 0 15 "Environment setup complete"
-          STEP_DURATIONS[0]="$(($(date +%s) - STEP_START))s"
 
       - name: Configure Git
         shell: bash
         run: |
+          set -euo pipefail
+
           git config --global user.name "OnePlus"
           git config --global user.email "OnePlus@qq.com"
           git config --global advice.detachedHead false
@@ -444,10 +453,10 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-${{ matrix.device.branch }}-${{ inputs.KSU_SETUP_BRANCH }}-${{ hashFiles('.github/workflows/*.yml') }}
+          key: ccache-${{ runner.os }}-${{ matrix.branch }}-${{ inputs.KSU_SETUP_BRANCH }}-${{ hashFiles('.github/workflows/*.yml') }}
           restore-keys: |
-            ccache-${{ runner.os }}-${{ matrix.device.branch }}-${{ inputs.KSU_SETUP_BRANCH }}-
-            ccache-${{ runner.os }}-${{ matrix.device.branch }}-
+            ccache-${{ runner.os }}-${{ matrix.branch }}-${{ inputs.KSU_SETUP_BRANCH }}-
+            ccache-${{ runner.os }}-${{ matrix.branch }}-
             ccache-${{ runner.os }}-
 
       - name: Initialize Ccache
@@ -458,10 +467,8 @@ jobs:
 
           mkdir -p "$CCACHE_DIR" "${RUNNER_TEMP}/ccache-tmp"
 
-          KERNEL_SRC_ROOT="${GITHUB_WORKSPACE}/kernel_workspace"
-
           ccache --set-config=max_size="${CCACHE_MAXSIZE}"
-          ccache --set-config=base_dir="${KERNEL_SRC_ROOT}"
+          ccache --set-config=base_dir="${GITHUB_WORKSPACE}/kernel_workspace"
           ccache --set-config=compression=true
           ccache --set-config=compression_level=1
           ccache --set-config=temporary_dir="${RUNNER_TEMP}/ccache-tmp"
@@ -469,7 +476,6 @@ jobs:
           ccache --set-config=compiler_check=content
           ccache --set-config=sloppiness=include_file_mtime,include_file_ctime,time_macros,file_macro,system_headers,pch_defines
           ccache --set-config=run_second_cpp=true
-
           ccache --zero-stats
           ccache -s
 
@@ -482,11 +488,10 @@ jobs:
             ${{ env.BAZELISK_HOME }}
             ~/.cache/bazel
             ~/.cache/bazelisk
-          key: bazel-${{ runner.os }}-${{ matrix.device.branch }}-${{ matrix.device.id }}-${{ hashFiles('.github/workflows/*.yml') }}-${{ github.run_id }}
+          key: bazel-${{ runner.os }}-${{ matrix.branch }}-${{ matrix.id }}-${{ hashFiles('.github/workflows/*.yml') }}
           restore-keys: |
-            bazel-${{ runner.os }}-${{ matrix.device.branch }}-${{ matrix.device.id }}-${{ hashFiles('.github/workflows/*.yml') }}-
-            bazel-${{ runner.os }}-${{ matrix.device.branch }}-${{ matrix.device.id }}-
-            bazel-${{ runner.os }}-${{ matrix.device.branch }}-
+            bazel-${{ runner.os }}-${{ matrix.branch }}-${{ matrix.id }}-
+            bazel-${{ runner.os }}-${{ matrix.branch }}-
             bazel-${{ runner.os }}-
 
       - name: Restore Clang Toolchain Cache
@@ -497,8 +502,9 @@ jobs:
             kernel_workspace/prebuilts/clang
             kernel_workspace/prebuilts/gcc
             ~/.cache/bazel/_bazel_*/*/external/kleaf_clang_toolchain
-          key: clang-toolchain-${{ runner.os }}-${{ hashFiles('kernel_workspace/common/build.config.constants', 'kernel_workspace/BUILD.bazel') }}
+          key: clang-toolchain-${{ runner.os }}-${{ matrix.branch }}
           restore-keys: |
+            clang-toolchain-${{ runner.os }}-${{ matrix.branch }}-
             clang-toolchain-${{ runner.os }}-
 
       - name: Restore GKI Sources Cache
@@ -510,9 +516,9 @@ jobs:
             kernel_workspace/.repo/projects
             kernel_workspace/.repo/manifests
             kernel_workspace/.repo/manifests.git
-          key: gki-sources-${{ matrix.device.branch }}-${{ github.run_id }}
+          key: gki-sources-${{ matrix.branch }}
           restore-keys: |
-            gki-sources-${{ matrix.device.branch }}-
+            gki-sources-${{ matrix.branch }}-
 
       - name: Install Repo Tool
         shell: bash
@@ -525,6 +531,8 @@ jobs:
 
           chmod a+x "$HOME/repo"
           sudo mv "$HOME/repo" /usr/local/bin/repo
+
+          repo version | head -1
 
       - name: Disk Space Check pre-sync
         shell: bash
@@ -544,7 +552,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          
+
           STEP_START=$(date +%s)
           /tmp/update_progress.sh 1 20 "Syncing GKI kernel sources..."
 
@@ -554,77 +562,57 @@ jobs:
             local attempt=1
 
             while [ "$attempt" -le "$max_attempts" ]; do
+              echo "🔄 Attempt $attempt/$max_attempts: $*"
               if "$@"; then
                 return 0
               fi
+              echo "⏳ Retrying in ${timeout_s}s..."
               sleep "$timeout_s"
               timeout_s=$((timeout_s * 2))
               attempt=$((attempt + 1))
             done
 
+            echo "❌ All attempts failed: $*"
             return 1
           }
 
           mkdir -p kernel_workspace
           cd kernel_workspace
 
-          if [ "${{ steps.cache-gki-restore.outputs.cache-hit }}" = "true" ] && [ -d ".repo/project-objects" ]; then
-            /tmp/update_progress.sh 1 25 "Using cached GKI sources (incremental sync)..."
-            
-            retry_command repo sync \
-              -c \
-              -j16 \
-              --local-only \
-              --prune \
-              --force-sync \
-              --current-branch \
-              --no-tags
-          else
-            /tmp/update_progress.sh 1 22 "Downloading GKI sources (first build)..."
+          /tmp/update_progress.sh 1 22 "Initializing repo manifest..."
 
-            retry_command repo init \
-              -u https://android.googlesource.com/kernel/manifest \
-              -b "common-${KERNEL_BRANCH}" \
-              --depth=1 \
-              --no-clone-bundle \
-              --no-tags
+          retry_command repo init \
+            -u https://android.googlesource.com/kernel/manifest \
+            -b "common-${KERNEL_BRANCH}" \
+            --depth=1 \
+            --no-clone-bundle \
+            --no-tags
 
-            retry_command repo sync \
-              -c \
-              -j16 \
-              --prune \
-              --no-clone-bundle \
-              --no-tags \
-              --force-sync \
-              --current-branch \
-              --optimized-fetch \
-              --retry-fetches=3
-          fi
+          SYNC_JOBS="$(nproc)"
+          [ "$SYNC_JOBS" -gt 8 ] && SYNC_JOBS=8
+
+          /tmp/update_progress.sh 1 25 "Downloading/syncing GKI sources..."
+
+          retry_command repo sync \
+            -c \
+            -j"${SYNC_JOBS}" \
+            --prune \
+            --no-clone-bundle \
+            --no-tags \
+            --force-sync \
+            --current-branch \
+            --optimized-fetch \
+            --retry-fetches=3
 
           if [ -e "common/BUILD.bazel" ]; then
-            sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' \
-              common/BUILD.bazel || true
-
-            sed -i '/protected_exports_list[[:space:]]*=[[:space:]]*"android\/abi_gki_protected_exports_aarch64"/d' \
-              common/BUILD.bazel || true
+            sed -i '/^[[:space:]]*"protected_exports_list"[[:space:]]*:[[:space:]]*"android\/abi_gki_protected_exports_aarch64",$/d' common/BUILD.bazel || true
+            sed -i '/protected_exports_list[[:space:]]*=[[:space:]]*"android\/abi_gki_protected_exports_aarch64"/d' common/BUILD.bazel || true
           fi
 
           rm -f common/android/abi_gki_protected_exports_* 2>/dev/null || true
-          
+
+          echo "DURATION_SYNC_GKI=$(($(date +%s) - STEP_START))s" >> "$GITHUB_ENV"
           /tmp/update_progress.sh 1 30 "GKI sources ready"
-          STEP_DURATIONS[1]="$(($(date +%s) - STEP_START))s"
-
-      - name: Verify Clang Toolchain Cache
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ "${{ steps.cache-clang-restore.outputs.cache-hit }}" = "true" ]; then
-            if [ -d "kernel_workspace/prebuilts/clang" ]; then
-              CLANG_SIZE=$(du -sh kernel_workspace/prebuilts/clang 2>/dev/null | cut -f1 || echo 'N/A')
-              echo "✅ Clang toolchain cached: $CLANG_SIZE"
-            fi
-          fi
 
       - name: Kernel Version Handling
         shell: bash
@@ -659,10 +647,12 @@ jobs:
 
           NEW_VERSION="$(awk '/^VERSION =/ {v=$3} /^PATCHLEVEL =/ {p=$3} /^SUBLEVEL =/ {s=$3} END {print v"."p"."s}' ./common/Makefile)"
 
-          echo "TKERNEL_VERSION=$NEW_VERSION" >> "$GITHUB_ENV"
-          echo "KV1=${KERNEL_VERSION%%.*}" >> "$GITHUB_ENV"
-          echo "KV2=$(echo "$KERNEL_VERSION" | tr -d '.')" >> "$GITHUB_ENV"
-          echo "KV3=$(echo "$NEW_VERSION" | tr -d '.')" >> "$GITHUB_ENV"
+          {
+            echo "TKERNEL_VERSION=$NEW_VERSION"
+            echo "KV1=${KERNEL_VERSION%%.*}"
+            echo "KV2=$(echo "$KERNEL_VERSION" | tr -d '.')"
+            echo "KV3=$(echo "$NEW_VERSION" | tr -d '.')"
+          } >> "$GITHUB_ENV"
 
       - name: Apply Kernel Suffix
         shell: bash
@@ -675,6 +665,7 @@ jobs:
           INPUT_SUFFIX="${{ inputs.SUFFIX }}"
 
           if [ "$INPUT_SUFFIX" = "-1" ]; then
+            echo "⏭️ Kernel suffix disabled"
             exit 0
           elif [ -n "$INPUT_SUFFIX" ]; then
             SUFFIX="$INPUT_SUFFIX"
@@ -729,8 +720,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          
-          /tmp/update_progress.sh 2 35 "Adding ReSukiSU (KernelSU)..."
+
+          /tmp/update_progress.sh 2 35 "Adding ReSukiSU..."
 
           cd kernel_workspace
 
@@ -757,16 +748,21 @@ jobs:
           fi
 
           KSU_COMMIT_SHA="$(git rev-parse HEAD)"
-          echo "KSU_COMMIT_SHA=${KSU_COMMIT_SHA}" >> "$GITHUB_ENV"
-
           KSU_VERSION=$(( $(git rev-list --count HEAD 2>/dev/null || echo 13000) + 30700 ))
-          echo "KSUVER=${KSU_VERSION}" >> "$GITHUB_ENV"
+
+          {
+            echo "KSU_COMMIT_SHA=${KSU_COMMIT_SHA}"
+            echo "KSUVER=${KSU_VERSION}"
+          } >> "$GITHUB_ENV"
+
+          echo "✅ ReSukiSU commit: ${KSU_COMMIT_SHA}"
+          echo "✅ ReSukiSU version: ${KSU_VERSION}"
 
       - name: Apply Patches — ReSukiSU and SUSFS
         shell: bash
         run: |
           set -euo pipefail
-          
+
           STEP_START=$(date +%s)
           /tmp/update_progress.sh 2 40 "Applying SUSFS and security patches..."
 
@@ -792,11 +788,13 @@ jobs:
             fi
 
             SUSFS_COMMIT_SHA="$(git rev-parse HEAD)"
-            echo "SUSFS_COMMIT_SHA=${SUSFS_COMMIT_SHA}" >> "$GITHUB_ENV"
-            echo "SUSFS_BRANCH_NAME=${BR}" >> "$GITHUB_ENV"
-
             SUSVER="$([ -f VERSION ] && tr -d '\n' < VERSION || echo '2.0.0+')"
-            echo "SUSVER=${SUSVER}" >> "$GITHUB_ENV"
+
+            {
+              echo "SUSFS_COMMIT_SHA=${SUSFS_COMMIT_SHA}"
+              echo "SUSFS_BRANCH_NAME=${BR}"
+              echo "SUSVER=${SUSVER}"
+            } >> "$GITHUB_ENV"
 
             cd ..
 
@@ -812,14 +810,19 @@ jobs:
             local description="${2:-$1}"
 
             if [ ! -f "$patch_file" ]; then
+              echo "⚠️ Patch not found: $patch_file"
               return 1
             fi
 
+            echo "📝 Applying: $description"
+
             if patch -p1 --dry-run < "$patch_file" >/dev/null 2>&1; then
               patch -p1 < "$patch_file"
+              echo "✅ Applied: $description"
               return 0
             fi
 
+            echo "⚠️ Patch already applied or incompatible: $description"
             return 1
           }
 
@@ -851,21 +854,16 @@ jobs:
           }
 
           if [ "${{ inputs.SUSFS_META }}" != "-1" ]; then
-            apply_patch_safe \
-              "50_add_susfs_in_gki-${KANDROID_VERSION}-${KERNEL_VERSION}.patch" \
-              "SUSFS Integration" || true
-
+            apply_patch_safe "50_add_susfs_in_gki-${KANDROID_VERSION}-${KERNEL_VERSION}.patch" "SUSFS Integration" || true
             fix_op15_recovery_bootloop_sus_mount
 
             if [ "${{ inputs.XUS_FIX }}" = "true" ]; then
-              apply_patch_safe \
-                "../../Action-Build/patches/No_5uS.patch" \
-                "No_5uS Fix" || true
+              apply_patch_safe "../../Action-Build/patches/No_5uS.patch" "No_5uS Fix" || true
             fi
           fi
-          
+
+          echo "DURATION_PATCHES=$(($(date +%s) - STEP_START))s" >> "$GITHUB_ENV"
           /tmp/update_progress.sh 2 45 "Patches applied successfully"
-          STEP_DURATIONS[2]="$(($(date +%s) - STEP_START))s"
 
       - name: Fix SELinux hide unresolved symbols
         if: ${{ inputs.SUSFS_META != '-1' }}
@@ -878,14 +876,18 @@ jobs:
           SELINUXFS="security/selinux/selinuxfs.c"
 
           if [ ! -f "$SELINUXFS" ]; then
+            echo "⚠️ $SELINUXFS not found, skipping"
             exit 0
           fi
 
           git restore "$SELINUXFS" || git checkout HEAD -- "$SELINUXFS"
 
           if grep -RInE 'ksu_selinux_hide_enabled|fake_status|initialize_fake_status|fake_status_initialize_key|my_sel_open_handle_status' "$SELINUXFS"; then
+            echo "❌ ERROR: Broken SELinux hide-hook references still remain"
             exit 1
           fi
+
+          echo "✅ SELinuxFS cleanup completed"
 
       - name: Apply Unicode Bypass
         if: ${{ inputs.UNICODE_BYPASS }}
@@ -902,10 +904,7 @@ jobs:
             PATCH_FILE="${PATCH_DIR}/unicode_bypass_fix_6.1+.patch"
           fi
 
-          if [ ! -f "$PATCH_FILE" ]; then
-            exit 0
-          fi
-
+          [ -f "$PATCH_FILE" ] || exit 0
           patch -p1 --forward < "$PATCH_FILE" || true
 
       - name: Apply LSM — Baseband Guard
@@ -919,13 +918,10 @@ jobs:
           BBG_SETUP_URL="https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh"
           curl -fL --proto '=https' --tlsv1.2 -o /tmp/bbg_setup.sh "$BBG_SETUP_URL"
 
-          bash /tmp/bbg_setup.sh main || {
-            exit 1
-          }
+          bash /tmp/bbg_setup.sh main
 
           if ! grep -q 'baseband_guard' ./security/Kconfig; then
-            sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' \
-              ./security/Kconfig
+            sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' ./security/Kconfig
           fi
 
           echo "CONFIG_BBG=y" >> arch/arm64/configs/gki_defconfig
@@ -934,8 +930,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          
-          STEP_START=$(date +%s)
+
           /tmp/update_progress.sh 3 50 "Configuring kernel options..."
 
           cd kernel_workspace/common
@@ -1060,13 +1055,8 @@ jobs:
 
           cd kernel_workspace/common
 
-          if [[ "${CPU}" != sm* ]]; then
-            exit 0
-          fi
-
-          if [ ! -f "$PATCH_FILE" ]; then
-            exit 0
-          fi
+          [[ "${CPU}" == sm* ]] || exit 0
+          [ -f "$PATCH_FILE" ] || exit 0
 
           if patch -p1 --dry-run -F 3 < "$PATCH_FILE" >/dev/null 2>&1; then
             patch -p1 -F 3 < "$PATCH_FILE"
@@ -1085,8 +1075,10 @@ jobs:
             DATESTR="$INPUT_TIME"
           fi
 
-          echo "KBUILD_BUILD_TIMESTAMP=${DATESTR}" >> "$GITHUB_ENV"
-          echo "KBUILD_BUILD_VERSION=1" >> "$GITHUB_ENV"
+          {
+            echo "KBUILD_BUILD_TIMESTAMP=${DATESTR}"
+            echo "KBUILD_BUILD_VERSION=1"
+          } >> "$GITHUB_ENV"
 
           cd kernel_workspace
 
@@ -1110,9 +1102,7 @@ jobs:
 
           BUILD_FILE="kernel_workspace/common/BUILD.bazel"
 
-          if [ ! -f "$BUILD_FILE" ]; then
-            exit 0
-          fi
+          [ -f "$BUILD_FILE" ] || exit 0
 
           sed -i '/protected_module_names_list[[:space:]]*=[[:space:]]*":gki_aarch64_protected_module_names"/d' "$BUILD_FILE"
           sed -i '/protected_exports_list[[:space:]]*=[[:space:]]*"android\/abi_gki_protected_exports_aarch64"/d' "$BUILD_FILE"
@@ -1127,7 +1117,11 @@ jobs:
 
           CONFIG_FILE="./arch/arm64/configs/gki_defconfig"
 
+          echo "🔎 Important defconfig entries:"
+          grep -nE 'CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=|CONFIG_KPM=|CONFIG_TCP_CONG_BBR=|CONFIG_IP_SET=|CONFIG_DEBUG_KERNEL=' "$CONFIG_FILE" || true
+
           if grep -q '^CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y' "$CONFIG_FILE"; then
+            echo "❌ ERROR: CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS is enabled"
             exit 1
           fi
 
@@ -1135,7 +1129,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          
+
+          STEP_START=$(date +%s)
           /tmp/update_progress.sh 3 55 "Normalizing defconfig..."
 
           cd kernel_workspace
@@ -1143,10 +1138,13 @@ jobs:
           DEFCONFIG="common/arch/arm64/configs/gki_defconfig"
 
           if [ ! -f "$DEFCONFIG" ]; then
+            echo "❌ ERROR: $DEFCONFIG not found"
             exit 1
           fi
 
           if [ ! -x "tools/bazel" ] || [ ! -f "common/BUILD.bazel" ]; then
+            echo "⏭️ Not a Kleaf/Bazel tree, skipping defconfig normalization"
+            echo "DURATION_CONFIGURE=$(($(date +%s) - STEP_START))s" >> "$GITHUB_ENV"
             exit 0
           fi
 
@@ -1160,15 +1158,20 @@ jobs:
           STATUS="${PIPESTATUS[0]}"
           set -e
 
+          echo "ℹ️ First kernel_aarch64_config status: $STATUS"
+
           NORMALIZED_DEFCONFIG="$(find out/cache -path "*/common/defconfig" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
 
           if [ -z "$NORMALIZED_DEFCONFIG" ] || [ ! -f "$NORMALIZED_DEFCONFIG" ]; then
+            echo "❌ ERROR: Could not find normalized defconfig in out/cache"
+            find out -path "*/defconfig" -type f -print 2>/dev/null | head -50 || true
             exit 1
           fi
 
           cp "$NORMALIZED_DEFCONFIG" "$DEFCONFIG"
 
           if grep -q '^CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y' "$DEFCONFIG"; then
+            echo "❌ ERROR: CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS unexpectedly enabled"
             exit 1
           fi
 
@@ -1182,23 +1185,28 @@ jobs:
           GENERATED_CONFIG="$(find out -name ".config" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
 
           if [ -n "$GENERATED_CONFIG" ] && [ -f "$GENERATED_CONFIG" ]; then
+            grep -nE 'CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS|CONFIG_KPM=|CONFIG_TCP_CONG_BBR=|CONFIG_IP_SET=|CONFIG_DEBUG_KERNEL|CONFIG_KSU_FULL_NAME_FORMAT' "$GENERATED_CONFIG" || true
+
             if ! grep -q '^CONFIG_KSU=y' "$GENERATED_CONFIG"; then
+              echo "❌ ERROR: CONFIG_KSU=y missing in generated .config"
               exit 1
             fi
 
             if [ "${{ inputs.SUSFS_META }}" != "-1" ]; then
               if ! grep -q '^CONFIG_KSU_SUSFS=y' "$GENERATED_CONFIG"; then
+                echo "❌ ERROR: CONFIG_KSU_SUSFS=y missing in generated .config"
                 exit 1
               fi
             fi
 
             if grep -q '^CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y' "$GENERATED_CONFIG"; then
+              echo "❌ ERROR: CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS unexpectedly enabled"
               exit 1
             fi
           fi
-          
+
+          echo "DURATION_CONFIGURE=$(($(date +%s) - STEP_START))s" >> "$GITHUB_ENV"
           /tmp/update_progress.sh 3 60 "Kernel configured successfully"
-          STEP_DURATIONS[3]="$(($(date +%s) - STEP_START))s"
 
       - name: Pre-Build Disk Check
         shell: bash
@@ -1210,6 +1218,7 @@ jobs:
           AVAIL_GB=$(df -BG "$GITHUB_WORKSPACE" | awk 'NR==2{gsub("G","",$4); print $4}')
 
           if [ "${AVAIL_GB:-0}" -lt 10 ]; then
+            echo "❌ ERROR: Only ${AVAIL_GB}GB free — minimum 10GB required"
             exit 1
           fi
 
@@ -1217,24 +1226,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          
+
           STEP_START=$(date +%s)
-          /tmp/update_progress.sh 4 65 "Compiling kernel (this may take 5-8 minutes)..."
-      
+          /tmp/update_progress.sh 4 65 "Compiling kernel..."
+
           cd kernel_workspace
-      
+
           ROOT="$PWD"
           NPROC="$(nproc)"
           BUILD_THREADS="$((NPROC * 2))"
-      
+
+          echo "BUILD_THREADS=${BUILD_THREADS}" >> "$GITHUB_ENV"
+
           export MAKEFLAGS="-j${BUILD_THREADS}"
-      
+
           echo "🚀 Starting kernel build at $(date)"
           echo "🔧 CPU cores: ${NPROC} | Build threads: ${BUILD_THREADS}"
           echo "📱 Device: ${DEVICE_NAME} (${DEVICE_CODENAME})"
-      
+
           USE_BAZEL=false
-      
+
           if [ -x "tools/bazel" ] && [ -f "common/BUILD.bazel" ]; then
             USE_BAZEL=true
           elif [ -f "build/build.sh" ]; then
@@ -1243,22 +1254,20 @@ jobs:
             echo "❌ ERROR: No supported build system found"
             exit 1
           fi
-      
-          echo "🏗️ Build system: $( [ "$USE_BAZEL" = "true" ] && echo 'Bazel/Kleaf' || echo 'legacy build.sh' )"
-      
+
           if [ "$USE_BAZEL" = "true" ]; then
             echo "BUILD_SYSTEM_USED=Bazel/Kleaf" >> "$GITHUB_ENV"
           else
             echo "BUILD_SYSTEM_USED=Legacy build.sh" >> "$GITHUB_ENV"
           fi
-      
+
           USE_CCACHE=0
           CCACHE_EXEC=""
-      
+
           if [ "${BUILD_NOCCACHE_ENABLED}" != "1" ] && [ "$USE_BAZEL" = "false" ]; then
             USE_CCACHE=1
             CCACHE_EXEC="$(command -v ccache)"
-      
+
             export PATH="/usr/lib/ccache:$PATH"
             export USE_CCACHE=1
             export CCACHE_EXEC="${CCACHE_EXEC}"
@@ -1267,32 +1276,23 @@ jobs:
             export CCACHE_NOHASHDIR=true
             export CCACHE_COMPILERCHECK=content
             export CCACHE_SLOPPINESS="include_file_mtime,include_file_ctime,time_macros,file_macro,system_headers,pch_defines"
-      
+
             CLANG_BIN="$(command -v clang)"
             export CC="ccache ${CLANG_BIN}"
             export CXX="ccache $(command -v clang++)"
             export HOSTCC="ccache ${CLANG_BIN}"
             export HOSTCXX="ccache $(command -v clang++)"
-      
+
             ccache -s
           elif [ "${BUILD_NOCCACHE_ENABLED}" != "1" ] && [ "$USE_BAZEL" = "true" ]; then
-            echo "⚡ Cache status:"
-            echo "  - Bazel cache: ${{ steps.cache-bazel-restore.outputs.cache-hit == 'true' && '✅ Hit' || '❌ Miss' }}"
-            echo "  - Clang toolchain: ${{ steps.cache-clang-restore.outputs.cache-hit == 'true' && '✅ Hit' || '❌ Miss' }}"
-            echo "  - GKI sources: ${{ steps.cache-gki-restore.outputs.cache-hit == 'true' && '✅ Hit' || '❌ Miss' }}"
-            
-            if [ "${{ steps.cache-bazel-restore.outputs.cache-hit }}" = "true" ]; then
-              echo "✅ Cache Bazel restauré: $(du -sh ${BAZEL_CACHE_DIR} 2>/dev/null | cut -f1 || echo 'N/A')"
-            else
-              echo "📦 Premier build, cache Bazel sera créé"
-            fi
+            echo "⚡ Cache: Bazel disk_cache only"
           else
             echo "🧹 Cache disabled"
           fi
-      
+
           mkdir -p "${BAZEL_CACHE_DIR}/repository" "${BAZELISK_HOME}"
           export BAZELISK_HOME="${BAZELISK_HOME}"
-      
+
           if [ "$USE_BAZEL" = "false" ]; then
             time env \
               LTO=none \
@@ -1308,13 +1308,7 @@ jobs:
           else
             TOTAL_RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
             RAM_FOR_BAZEL=$((TOTAL_RAM_MB * 80 / 100))
-            
-            echo "💾 System resources:"
-            echo "  - Total RAM: ${TOTAL_RAM_MB} MB"
-            echo "  - RAM for Bazel: ${RAM_FOR_BAZEL} MB (80%)"
-            echo "  - CPU cores: ${NPROC}"
-            echo "  - Build threads: ${BUILD_THREADS}"
-            
+
             BAZEL_ARGS=(
               --config=fast
               --jobs="${BUILD_THREADS}"
@@ -1326,28 +1320,23 @@ jobs:
               --show_progress_rate_limit=30
               --show_result=0
               --verbose_failures
-              --remote_download_minimal
               --loading_phase_threads="${NPROC}"
-              --action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
               --local_resources="cpu=${NPROC},memory=${RAM_FOR_BAZEL}"
             )
-      
-            echo "🔧 Bazel arguments:"
-            printf '  %s\n' "${BAZEL_ARGS[@]}"
-      
+
             time tools/bazel build \
               "${BAZEL_ARGS[@]}" \
               //common:kernel_aarch64_dist 2>&1 | tee "$ROOT/build.log"
           fi
-      
+
           echo "✅ Kernel build completed at $(date)"
-      
+
           if [ "${USE_CCACHE}" = "1" ]; then
             ccache -s
           fi
-          
-          /tmp/update_progress.sh 4 85 "Kernel compilation complete!"
-          STEP_DURATIONS[4]="$(($(date +%s) - STEP_START))s"
+
+          echo "DURATION_BUILD_KERNEL=$(($(date +%s) - STEP_START))s" >> "$GITHUB_ENV"
+          /tmp/update_progress.sh 4 85 "Kernel compilation complete"
 
       - name: Capture Ccache Stats
         if: ${{ always() && inputs.BUILD_NOCCACHE != true }}
@@ -1361,7 +1350,7 @@ jobs:
             CACHE_SIZE="$(ccache -s 2>/dev/null | awk '/Cache size/ {print $3, $4}' | head -1)"
           else
             if [ -d "${BAZEL_CACHE_DIR}" ]; then
-              CACHE_SIZE="$(du -sh ${BAZEL_CACHE_DIR} 2>/dev/null | cut -f1 || echo 'N/A')"
+              CACHE_SIZE="$(du -sh "${BAZEL_CACHE_DIR}" 2>/dev/null | cut -f1 || echo 'N/A')"
               HIT_RATE="N/A (Bazel internal cache)"
               CACHEABLE="N/A (Bazel internal cache)"
             else
@@ -1371,9 +1360,11 @@ jobs:
             fi
           fi
 
-          echo "CCACHE_HIT_RATE=${HIT_RATE:-N/A}" >> "$GITHUB_ENV"
-          echo "CCACHE_CACHEABLE_CALLS=${CACHEABLE:-N/A}" >> "$GITHUB_ENV"
-          echo "CCACHE_SIZE=${CACHE_SIZE:-N/A}" >> "$GITHUB_ENV"
+          {
+            echo "CCACHE_HIT_RATE=${HIT_RATE:-N/A}"
+            echo "CCACHE_CACHEABLE_CALLS=${CACHEABLE:-N/A}"
+            echo "CCACHE_SIZE=${CACHE_SIZE:-N/A}"
+          } >> "$GITHUB_ENV"
 
       - name: Make AnyKernel3
         shell: bash
@@ -1381,6 +1372,8 @@ jobs:
           set -euo pipefail
 
           STEP_START=$(date +%s)
+          echo "PACKAGE_START_TIME=${STEP_START}" >> "$GITHUB_ENV"
+
           /tmp/update_progress.sh 5 90 "Packaging AnyKernel3 flashable ZIP..."
 
           git clone https://github.com/Bouteillepleine/AnyKernel3 --depth=1
@@ -1402,6 +1395,7 @@ jobs:
           for candidate in "${CANDIDATES[@]}"; do
             if [ -f "$candidate" ]; then
               image_path="$candidate"
+              echo "✅ Image found: $image_path"
               break
             fi
           done
@@ -1473,6 +1467,8 @@ jobs:
 
           ZIP_NAME="AK3_ReSukiSU_${KSUVER}_${DEVICE_NAME_SAFE}_${TKERNEL_VERSION}${{ steps.suffix.outputs.value }}.zip"
 
+          echo "📦 Creating: $ZIP_NAME"
+
           SUSFS_MODULE_PRESENT=false
           if [ "${{ inputs.SUSFS_META }}" != "-1" ]; then
             if ls AnyKernel3/ksu_module_susfs*.zip 1>/dev/null 2>&1; then
@@ -1498,15 +1494,22 @@ jobs:
 
           ZIP_SIZE=$(du -h "${GITHUB_WORKSPACE}/${ZIP_NAME}" | awk '{print $1}')
           echo "ZIP_SIZE=${ZIP_SIZE}" >> "$GITHUB_ENV"
-          
+
+          if [ -n "${PACKAGE_START_TIME:-}" ]; then
+            echo "DURATION_PACKAGE_ZIP=$(($(date +%s) - PACKAGE_START_TIME))s" >> "$GITHUB_ENV"
+          else
+            echo "DURATION_PACKAGE_ZIP=N/A" >> "$GITHUB_ENV"
+          fi
+
+          unzip -l "${GITHUB_WORKSPACE}/${ZIP_NAME}" | grep -E "(Image|ksu_module_susfs|anykernel\.sh)" || true
+
           /tmp/update_progress.sh 5 95 "ZIP package created: ${ZIP_NAME}"
-          STEP_DURATIONS[5]="$(($(date +%s) - STEP_START))s"
 
       - name: Upload AK3 ZIP to GitHub Release
         if: ${{ inputs.CREATE_RELEASE == true }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ak3-${{ github.run_id }}
+          tag_name: ak3-${{ matrix.id }}-${{ github.run_id }}
           name: >-
             ${{ env.DEVICE_NAME }} — ReSukiSU ${{ env.KSUVER }} — ${{ env.TKERNEL_VERSION }}
             ${{ inputs.LSM && '[LSM]' || '' }}
@@ -1534,10 +1537,10 @@ jobs:
             - Unicode Bypass: `${{ inputs.UNICODE_BYPASS }}`
             - SUSFS: `${{ inputs.SUSFS_META != '-1' && 'Enabled' || 'Disabled' }}`
 
-            ### ⚡ Performance Optimizations
-            - GKI sources cached: `${{ steps.cache-gki-restore.outputs.cache-hit == 'true' && '✅ Hit (incremental sync)' || '❌ Miss (full download)' }}`
-            - Bazel cache: `${{ steps.cache-bazel-restore.outputs.cache-hit == 'true' && '✅ Hit' || '❌ Miss' }}`
-            - Clang toolchain: `${{ steps.cache-clang-restore.outputs.cache-hit == 'true' && '✅ Cached' || '❌ Downloaded' }}`
+            ### Cache
+            - GKI sources cache: `${{ steps.cache-gki-restore.outputs.cache-hit == 'true' && 'Hit' || 'Miss' }}`
+            - Bazel cache: `${{ steps.cache-bazel-restore.outputs.cache-hit == 'true' && 'Hit' || 'Miss' }}`
+            - Clang toolchain cache: `${{ steps.cache-clang-restore.outputs.cache-hit == 'true' && 'Hit' || 'Miss' }}`
             - Build threads: `${{ env.BUILD_THREADS || 'Auto' }}`
           files: ${{ env.ZIP_NAME }}
           fail_on_unmatched_files: true
@@ -1546,7 +1549,7 @@ jobs:
 
       - name: Upload AK3 ZIP as Artifact
         if: ${{ inputs.CREATE_RELEASE != true }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}
@@ -1574,8 +1577,8 @@ jobs:
           BUILD_LOG="kernel_workspace/build.log"
 
           if [ -f "$BUILD_LOG" ]; then
-            WARNINGS_COUNT=$(grep -c "warning:" "$BUILD_LOG" 2>/dev/null || true)
-            ERRORS_COUNT=$(grep -c "error:" "$BUILD_LOG" 2>/dev/null || true)
+            WARNINGS_COUNT=$(grep -ci "warning:" "$BUILD_LOG" 2>/dev/null || true)
+            ERRORS_COUNT=$(grep -ci "error:" "$BUILD_LOG" 2>/dev/null || true)
           fi
 
           echo "WARNINGS_COUNT=${WARNINGS_COUNT:-0}" >> "$GITHUB_ENV"
@@ -1604,17 +1607,19 @@ jobs:
           GKI_CACHE_STATUS="${{ steps.cache-gki-restore.outputs.cache-hit == 'true' && '✅ Hit' || '❌ Miss' }}"
           BAZEL_CACHE_STATUS="${{ steps.cache-bazel-restore.outputs.cache-hit == 'true' && '✅ Hit' || '❌ Miss' }}"
           CLANG_CACHE_STATUS="${{ steps.cache-clang-restore.outputs.cache-hit == 'true' && '✅ Hit' || '❌ Miss' }}"
-          
-          echo "GKI_CACHE_STATUS=${GKI_CACHE_STATUS}" >> "$GITHUB_ENV"
-          echo "BAZEL_CACHE_STATUS=${BAZEL_CACHE_STATUS}" >> "$GITHUB_ENV"
-          echo "CLANG_CACHE_STATUS=${CLANG_CACHE_STATUS}" >> "$GITHUB_ENV"
+
+          {
+            echo "GKI_CACHE_STATUS=${GKI_CACHE_STATUS}"
+            echo "BAZEL_CACHE_STATUS=${BAZEL_CACHE_STATUS}"
+            echo "CLANG_CACHE_STATUS=${CLANG_CACHE_STATUS}"
+          } >> "$GITHUB_ENV"
 
       - name: Build Summary
         if: always()
         shell: bash
         run: |
           set +e
-          
+
           /tmp/update_progress.sh 5 100 "Build complete!"
 
           KSU_COMMIT_SHA="${KSU_COMMIT_SHA:-N/A}"
@@ -1656,15 +1661,15 @@ jobs:
           BUILD_SYSTEM_TEXT="${BUILD_SYSTEM_USED:-Unknown}"
 
           if [ "${{ inputs.CREATE_RELEASE }}" = "true" ]; then
-            RELEASE_CELL="[⬇️ Download](https://github.com/${{ github.repository }}/releases/tag/ak3-${{ github.run_id }})"
+            RELEASE_CELL="[⬇️ Download](https://github.com/${{ github.repository }}/releases/tag/ak3-${{ matrix.id }}-${{ github.run_id }})"
           else
             RELEASE_CELL="📎 Artifact only"
           fi
 
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          
+
           ---
-          
+
           # ${STATUS_ICON} ${DEVICE_NAME} — ReSukiSU Build ${STATUS_TEXT}
 
           ## Build Status
@@ -1726,26 +1731,30 @@ jobs:
           | Clang toolchain cache | ${CLANG_CACHE_STATUS} |
           | Cache size | ${CCACHE_SIZE} |
           | Ccache hit rate | ${CCACHE_HIT_RATE} |
+          | Ccache cacheable calls | ${CCACHE_CACHEABLE_CALLS} |
           | Parallel jobs | $(nproc 2>/dev/null || echo N/A) cores × 2 = ${BUILD_THREADS:-N/A} threads |
-          
+
           ## 📊 Step Durations
-          
+
           | Step | Duration |
           |------|----------|
-          | Environment setup | ${STEP_DURATIONS[0]:-N/A} |
-          | Sync GKI sources | ${STEP_DURATIONS[1]:-N/A} |
-          | Apply patches | ${STEP_DURATIONS[2]:-N/A} |
-          | Configure kernel | ${STEP_DURATIONS[3]:-N/A} |
-          | Build kernel | ${STEP_DURATIONS[4]:-N/A} |
-          | Package ZIP | ${STEP_DURATIONS[5]:-N/A} |
+          | Environment setup | ${DURATION_ENV_SETUP:-N/A} |
+          | Sync GKI sources | ${DURATION_SYNC_GKI:-N/A} |
+          | Apply patches | ${DURATION_PATCHES:-N/A} |
+          | Configure kernel | ${DURATION_CONFIGURE:-N/A} |
+          | Build kernel | ${DURATION_BUILD_KERNEL:-N/A} |
+          | Package ZIP | ${DURATION_PACKAGE_ZIP:-N/A} |
           EOF
 
       - name: Upload Build Log
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
-          name: build_log_${{ matrix.device.id }}_${{ github.run_id }}
-          path: kernel_workspace/build.log
+          name: build_log_${{ matrix.id }}_${{ github.run_id }}
+          path: |
+            kernel_workspace/build.log
+            kernel_workspace/normalize_defconfig_first.log
+            kernel_workspace/normalize_defconfig_second.log
           retention-days: 7
           if-no-files-found: warn
 
@@ -1754,7 +1763,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ runner.os }}-${{ matrix.device.branch }}-${{ inputs.KSU_SETUP_BRANCH }}-${{ hashFiles('.github/workflows/*.yml') }}
+          key: ccache-${{ runner.os }}-${{ matrix.branch }}-${{ inputs.KSU_SETUP_BRANCH }}-${{ hashFiles('.github/workflows/*.yml') }}-${{ github.run_id }}
 
       - name: Save Bazel Cache
         if: ${{ always() && steps.cache-bazel-restore.outputs.cache-hit != 'true' }}
@@ -1765,7 +1774,7 @@ jobs:
             ${{ env.BAZELISK_HOME }}
             ~/.cache/bazel
             ~/.cache/bazelisk
-          key: bazel-${{ runner.os }}-${{ matrix.device.branch }}-${{ matrix.device.id }}-${{ hashFiles('.github/workflows/*.yml') }}-${{ github.run_id }}
+          key: bazel-${{ runner.os }}-${{ matrix.branch }}-${{ matrix.id }}-${{ hashFiles('.github/workflows/*.yml') }}-${{ github.run_id }}
 
       - name: Save Clang Toolchain Cache
         if: ${{ always() && steps.cache-clang-restore.outputs.cache-hit != 'true' }}
@@ -1775,10 +1784,10 @@ jobs:
             kernel_workspace/prebuilts/clang
             kernel_workspace/prebuilts/gcc
             ~/.cache/bazel/_bazel_*/*/external/kleaf_clang_toolchain
-          key: clang-toolchain-${{ runner.os }}-${{ hashFiles('kernel_workspace/common/build.config.constants', 'kernel_workspace/BUILD.bazel') }}
+          key: clang-toolchain-${{ runner.os }}-${{ matrix.branch }}-${{ github.run_id }}
 
       - name: Save GKI Sources Cache
-        if: always()
+        if: ${{ always() && steps.cache-gki-restore.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: |
@@ -1786,7 +1795,7 @@ jobs:
             kernel_workspace/.repo/projects
             kernel_workspace/.repo/manifests
             kernel_workspace/.repo/manifests.git
-          key: gki-sources-${{ matrix.device.branch }}-${{ github.run_id }}
+          key: gki-sources-${{ matrix.branch }}-${{ github.run_id }}
 
       - name: Cleanup
         if: always()
@@ -1825,9 +1834,9 @@ jobs:
             echo "Duration : ${BUILD_DURATION_TEXT:-N/A}"
             echo ""
             echo "⚡ Cache Performance:"
-            echo "GKI cache: ${GKI_CACHE_STATUS:-N/A}"
-            echo "Bazel cache: ${BAZEL_CACHE_STATUS:-N/A}"
-            echo "Clang cache: ${CLANG_CACHE_STATUS:-N/A}"
+            echo "GKI cache   : ${GKI_CACHE_STATUS:-N/A}"
+            echo "Bazel cache : ${BAZEL_CACHE_STATUS:-N/A}"
+            echo "Clang cache : ${CLANG_CACHE_STATUS:-N/A}"
           elif [ "${{ job.status }}" = "failure" ]; then
             echo "❌ BUILD FAILED"
             echo "Device   : ${DEVICE_NAME:-N/A}"
