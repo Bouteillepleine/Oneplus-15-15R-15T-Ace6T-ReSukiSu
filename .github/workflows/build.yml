@@ -1234,7 +1234,7 @@ jobs:
 
           ROOT="$PWD"
           NPROC="$(nproc)"
-          BUILD_THREADS="$((NPROC * 2))"
+          BUILD_THREADS="$((NPROC + 2))"
 
           echo "BUILD_THREADS=${BUILD_THREADS}" >> "$GITHUB_ENV"
 
@@ -1254,6 +1254,8 @@ jobs:
             echo "❌ ERROR: No supported build system found"
             exit 1
           fi
+
+          echo "🏗️ Build system: $( [ "$USE_BAZEL" = "true" ] && echo 'Bazel/Kleaf' || echo 'Legacy build.sh' )"
 
           if [ "$USE_BAZEL" = "true" ]; then
             echo "BUILD_SYSTEM_USED=Bazel/Kleaf" >> "$GITHUB_ENV"
@@ -1286,6 +1288,11 @@ jobs:
             ccache -s
           elif [ "${BUILD_NOCCACHE_ENABLED}" != "1" ] && [ "$USE_BAZEL" = "true" ]; then
             echo "⚡ Cache: Bazel disk_cache only"
+
+            echo "📦 Cache status:"
+            echo "  - Bazel cache: ${{ steps.cache-bazel-restore.outputs.cache-hit == 'true' && '✅ Hit' || '❌ Miss' }}"
+            echo "  - Clang toolchain: ${{ steps.cache-clang-restore.outputs.cache-hit == 'true' && '✅ Hit' || '❌ Miss' }}"
+            echo "  - GKI sources: ${{ steps.cache-gki-restore.outputs.cache-hit == 'true' && '✅ Hit' || '❌ Miss' }}"
           else
             echo "🧹 Cache disabled"
           fi
@@ -1306,9 +1313,6 @@ jobs:
               CCACHE_SLOPPINESS="include_file_mtime,include_file_ctime,time_macros,file_macro,system_headers,pch_defines" \
               build/build.sh 2>&1 | tee "$ROOT/build.log"
           else
-            TOTAL_RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
-            RAM_FOR_BAZEL=$((TOTAL_RAM_MB * 80 / 100))
-
             BAZEL_ARGS=(
               --config=fast
               --jobs="${BUILD_THREADS}"
@@ -1320,9 +1324,10 @@ jobs:
               --show_progress_rate_limit=30
               --show_result=0
               --verbose_failures
-              --loading_phase_threads="${NPROC}"
-              --local_resources="cpu=${NPROC},memory=${RAM_FOR_BAZEL}"
             )
+
+            echo "🔧 Bazel arguments:"
+            printf '  %s\n' "${BAZEL_ARGS[@]}"
 
             time tools/bazel build \
               "${BAZEL_ARGS[@]}" \
