@@ -10,18 +10,32 @@ on:
         default: all
         options:
           - all
+          - caches
           - ccache
+          - bazel
+          - gki-sources
+          - clang-toolchain
           - artifacts
           - old-runs
+          - releases
 
       FILE_FILTER:
         type: choice
-        description: "Filtre de configuration (pour ccache)"
+        description: "Filtre de configuration / cache"
         required: false
         default: all
         options:
           - all
           - android16-6.12-2025-06
+          - android16-6.12-2025-09
+          - oneplus15
+          - oneplus15t
+          - oneplus15r
+          - ace6t
+          - ccache
+          - bazel
+          - gki-sources
+          - clang-toolchain
 
       DAYS_OLD:
         type: number
@@ -37,7 +51,7 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
 
 jobs:
   cleanup:
@@ -55,8 +69,7 @@ jobs:
           set -euo pipefail
 
           echo "::group::📊 Analyse du nettoyage"
-
-          echo "Configuration cible: ${{ inputs.FILE_FILTER }}"
+          echo "Filtre cible: ${{ inputs.FILE_FILTER }}"
           echo "Type de nettoyage: ${{ inputs.CLEANUP_TYPE }}"
           echo "Ancienneté: ${{ inputs.DAYS_OLD }} jours"
           echo "Mode simulation: ${{ inputs.DRY_RUN }}"
@@ -66,18 +79,34 @@ jobs:
 
           echo "::endgroup::"
 
-      - name: 🗑️ Clean Ccache
-        id: clean_ccache
-        if: ${{ inputs.CLEANUP_TYPE == 'all' || inputs.CLEANUP_TYPE == 'ccache' }}
+      - name: 🗑️ Clean Actions Caches
+        id: clean_caches
+        if: ${{ inputs.CLEANUP_TYPE == 'all' || inputs.CLEANUP_TYPE == 'caches' || inputs.CLEANUP_TYPE == 'ccache' || inputs.CLEANUP_TYPE == 'bazel' || inputs.CLEANUP_TYPE == 'gki-sources' || inputs.CLEANUP_TYPE == 'clang-toolchain' }}
         uses: actions/github-script@v7
         with:
           script: |
             const dryRun = '${{ inputs.DRY_RUN }}' === 'true';
             const fileFilter = '${{ inputs.FILE_FILTER }}';
+            const cleanupType = '${{ inputs.CLEANUP_TYPE }}';
             const daysOld = Number('${{ inputs.DAYS_OLD }}');
 
-            console.log('🧹 Nettoyage des caches ccache...');
+            console.log('🧹 Nettoyage des caches GitHub Actions...');
+            console.log(`Type: ${cleanupType}`);
+            console.log(`Filtre: ${fileFilter}`);
             console.log(`Mode: ${dryRun ? '🔍 SIMULATION' : '🗑️ SUPPRESSION RÉELLE'}`);
+
+            const cacheTypeMatches = (key) => {
+              if (cleanupType === 'all' || cleanupType === 'caches') return true;
+              if (cleanupType === 'ccache') return key.includes('ccache');
+              if (cleanupType === 'bazel') return key.includes('bazel');
+              if (cleanupType === 'gki-sources') return key.includes('gki-sources');
+              if (cleanupType === 'clang-toolchain') return key.includes('clang-toolchain');
+              return false;
+            };
+
+            const filterMatches = (key) => {
+              return fileFilter === 'all' || key.includes(fileFilter);
+            };
 
             try {
               const caches = await github.paginate(github.rest.actions.getActionsCacheList, {
@@ -95,11 +124,9 @@ jobs:
 
               for (const cache of caches) {
                 const cacheDate = new Date(cache.created_at);
-                const matchesFilter = fileFilter === 'all' || cache.key.includes(fileFilter);
                 const isOld = cacheDate < cutoffDate;
-                const isCcache = cache.key.includes('ccache');
 
-                if (isCcache && matchesFilter && isOld) {
+                if (cacheTypeMatches(cache.key) && filterMatches(cache.key) && isOld) {
                   matchedCount++;
                   totalSize += cache.size_in_bytes;
 
@@ -133,7 +160,7 @@ jobs:
               const sizeMb = (totalSize / 1024 / 1024).toFixed(2);
 
               console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-              console.log('📊 Résumé du nettoyage ccache:');
+              console.log('📊 Résumé du nettoyage caches:');
               console.log(`   Caches correspondants: ${matchedCount}`);
               console.log(`   Caches ${dryRun ? 'à supprimer' : 'supprimés'}: ${dryRun ? matchedCount : deletedCount}`);
               console.log(`   Espace ${dryRun ? 'à libérer' : 'libéré potentiel'}: ${sizeMb} MB`);
@@ -143,7 +170,7 @@ jobs:
               core.setOutput('deleted', String(dryRun ? matchedCount : deletedCount));
               core.setOutput('size_mb', sizeMb);
             } catch (error) {
-              console.error('❌ Erreur lors du nettoyage ccache:', error);
+              console.error('❌ Erreur lors du nettoyage des caches:', error);
               core.setFailed(error.message);
             }
 
@@ -210,13 +237,6 @@ jobs:
 
               const sizeMb = (totalSize / 1024 / 1024).toFixed(2);
 
-              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-              console.log('📊 Résumé du nettoyage des artefacts:');
-              console.log(`   Artefacts correspondants: ${matchedCount}`);
-              console.log(`   Artefacts ${dryRun ? 'à supprimer' : 'supprimés'}: ${dryRun ? matchedCount : deletedCount}`);
-              console.log(`   Espace ${dryRun ? 'à libérer' : 'libéré potentiel'}: ${sizeMb} MB`);
-              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
               core.setOutput('matched', String(matchedCount));
               core.setOutput('deleted', String(dryRun ? matchedCount : deletedCount));
               core.setOutput('size_mb', sizeMb);
@@ -264,7 +284,6 @@ jobs:
                   console.log(`   Statut: ${run.conclusion}`);
                   console.log(`   Branche: ${run.head_branch}`);
                   console.log(`   Créé le: ${run.created_at}`);
-                  console.log(`   Âge: ${Math.floor((Date.now() - runDate) / (1000 * 60 * 60 * 24))} jours`);
                   console.log(`   URL: ${run.html_url}`);
 
                   if (!dryRun) {
@@ -287,16 +306,91 @@ jobs:
                 }
               }
 
-              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-              console.log('📊 Résumé du nettoyage des exécutions:');
-              console.log(`   Exécutions correspondantes: ${matchedCount}`);
-              console.log(`   Exécutions ${dryRun ? 'à supprimer' : 'supprimées'}: ${dryRun ? matchedCount : deletedCount}`);
-              console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
               core.setOutput('matched', String(matchedCount));
               core.setOutput('deleted', String(dryRun ? matchedCount : deletedCount));
             } catch (error) {
               console.error('❌ Erreur lors du nettoyage des exécutions:', error);
+              core.setFailed(error.message);
+            }
+
+      - name: 🗑️ Clean Old AK3 Releases
+        id: clean_releases
+        if: ${{ inputs.CLEANUP_TYPE == 'all' || inputs.CLEANUP_TYPE == 'releases' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const dryRun = '${{ inputs.DRY_RUN }}' === 'true';
+            const daysOld = Number('${{ inputs.DAYS_OLD }}');
+            const fileFilter = '${{ inputs.FILE_FILTER }}';
+
+            console.log('🧹 Nettoyage des anciennes releases AK3...');
+            console.log(`Mode: ${dryRun ? '🔍 SIMULATION' : '🗑️ SUPPRESSION RÉELLE'}`);
+
+            try {
+              const releases = await github.paginate(github.rest.repos.listReleases, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100
+              });
+
+              let matchedCount = 0;
+              let deletedCount = 0;
+
+              const cutoffDate = new Date();
+              cutoffDate.setDate(cutoffDate.getDate() - daysOld);
+
+              for (const release of releases) {
+                const releaseDate = new Date(release.created_at);
+                const isOld = releaseDate < cutoffDate;
+                const isAk3 = release.tag_name && release.tag_name.startsWith('ak3-');
+                const matchesFilter = fileFilter === 'all'
+                  || release.tag_name.includes(fileFilter)
+                  || release.name.includes(fileFilter);
+
+                if (isOld && isAk3 && matchesFilter) {
+                  matchedCount++;
+
+                  console.log(`🏷️ Release trouvée: ${release.tag_name}`);
+                  console.log(`   ID: ${release.id}`);
+                  console.log(`   Nom: ${release.name}`);
+                  console.log(`   Créée le: ${release.created_at}`);
+                  console.log(`   URL: ${release.html_url}`);
+
+                  if (!dryRun) {
+                    try {
+                      await github.rest.repos.deleteRelease({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        release_id: release.id
+                      });
+
+                      try {
+                        await github.rest.git.deleteRef({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          ref: `tags/${release.tag_name}`
+                        });
+                        console.log('   ✅ Release + tag supprimés');
+                      } catch (tagError) {
+                        console.log(`   ⚠️ Release supprimée, tag non supprimé: ${tagError.message}`);
+                      }
+
+                      deletedCount++;
+                    } catch (error) {
+                      console.log(`   ❌ Erreur: ${error.message}`);
+                    }
+                  } else {
+                    console.log('   🔍 [SIMULATION] Serait supprimée');
+                  }
+
+                  console.log('');
+                }
+              }
+
+              core.setOutput('matched', String(matchedCount));
+              core.setOutput('deleted', String(dryRun ? matchedCount : deletedCount));
+            } catch (error) {
+              console.error('❌ Erreur lors du nettoyage des releases:', error);
               core.setFailed(error.message);
             }
 
@@ -314,7 +408,7 @@ jobs:
           | Paramètre | Valeur |
           |-----------|--------|
           | **Type de nettoyage** | \`${{ inputs.CLEANUP_TYPE }}\` |
-          | **Filtre de configuration** | \`${{ inputs.FILE_FILTER }}\` |
+          | **Filtre** | \`${{ inputs.FILE_FILTER }}\` |
           | **Ancienneté** | \`${{ inputs.DAYS_OLD }} jours\` |
           | **Mode** | ${{ inputs.DRY_RUN == true && '🔍 Simulation' || '🗑️ Suppression réelle' }} |
           | **Date limite** | \`${{ env.CUTOFF_DATE }}\` |
@@ -323,9 +417,10 @@ jobs:
 
           | Catégorie | Correspondants | Supprimés / simulés | Taille estimée |
           |----------|----------------|---------------------|----------------|
-          | Ccache | \`${{ steps.clean_ccache.outputs.matched || 'N/A' }}\` | \`${{ steps.clean_ccache.outputs.deleted || 'N/A' }}\` | \`${{ steps.clean_ccache.outputs.size_mb || 'N/A' }} MB\` |
+          | Caches | \`${{ steps.clean_caches.outputs.matched || 'N/A' }}\` | \`${{ steps.clean_caches.outputs.deleted || 'N/A' }}\` | \`${{ steps.clean_caches.outputs.size_mb || 'N/A' }} MB\` |
           | Artefacts | \`${{ steps.clean_artifacts.outputs.matched || 'N/A' }}\` | \`${{ steps.clean_artifacts.outputs.deleted || 'N/A' }}\` | \`${{ steps.clean_artifacts.outputs.size_mb || 'N/A' }} MB\` |
           | Exécutions | \`${{ steps.clean_runs.outputs.matched || 'N/A' }}\` | \`${{ steps.clean_runs.outputs.deleted || 'N/A' }}\` | \`N/A\` |
+          | Releases AK3 | \`${{ steps.clean_releases.outputs.matched || 'N/A' }}\` | \`${{ steps.clean_releases.outputs.deleted || 'N/A' }}\` | \`N/A\` |
 
           ---
 
