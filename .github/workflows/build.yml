@@ -212,30 +212,7 @@ jobs:
           echo "  Codename: ${{ matrix.device.codename }}"
           echo "  CPU: ${{ matrix.device.cpu }}"
           echo "  Branch: common-${{ matrix.device.branch }}"
-          echo "  Safe name: ${{ matrix.device.safe_name }}"
-
-      - name: Debug Environment Variables
-        shell: bash
-        run: |
-          echo "=== Environment Variables Check ==="
-          echo "DEVICE_NAME: ${DEVICE_NAME}"
-          echo "DEVICE_CODENAME: ${DEVICE_CODENAME}"
-          echo "CPU: ${CPU}"
-          echo "KERNEL_BRANCH: ${KERNEL_BRANCH}"
-          echo "DEVICE_NAME_SAFE: ${DEVICE_NAME_SAFE}"
-          echo "=================================="
-          
-          if [ -z "${KERNEL_BRANCH}" ]; then
-            echo "❌ ERROR: KERNEL_BRANCH is empty!"
-            exit 1
-          fi
-          
-          if [ -z "${DEVICE_NAME}" ]; then
-            echo "❌ ERROR: DEVICE_NAME is empty!"
-            exit 1
-          fi
-          
-          echo "✅ All required variables are set"
+          echo "  Safe name: ${{ matrix.device.safe_name }}"      
 
       - name: Initialize Progress Tracker
         shell: bash
