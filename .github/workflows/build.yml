@@ -216,7 +216,9 @@ jobs:
             echo "BUILD_START_TIME=$(date +%s)"
             echo "BUILD_START_DATE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
             echo "SUSFS_COMMIT_SHA=N/A"
+            echo "SUSFS_SHORT_SHA=N/A"
             echo "SUSFS_BRANCH_NAME=N/A"
+            echo "SUSFS_VERSION_SOURCE=N/A"
             echo "SUSVER=N/A"
           } >> "$GITHUB_ENV"
 
@@ -266,7 +268,7 @@ jobs:
             SUSFS_VERSION_TEXT="N/A"
           elif [ -z "${{ inputs.SUSFS_META }}" ]; then
             SUSFS_STATUS="✅ Enabled"
-            SUSFS_VERSION_TEXT="Latest upstream"
+            SUSFS_VERSION_TEXT="Latest upstream — exact version detected after SUSFS clone"
           else
             SUSFS_STATUS="✅ Enabled pinned"
             SUSFS_VERSION_TEXT="${{ inputs.SUSFS_META }}"
@@ -302,7 +304,7 @@ jobs:
           | Manager | \`${{ inputs.MANAGER_SOURCE }}\` |
           | KSU_META | \`${{ inputs.KSU_META }}\` |
           | SUSFS | ${SUSFS_STATUS} |
-          | SUSFS version / rollback | \`${SUSFS_VERSION_TEXT}\` |
+          | SUSFS requested version / rollback | \`${SUSFS_VERSION_TEXT}\` |
           | SUSFS dev | \`${{ inputs.SUSFS_DEV }}\` |
           | Kernel suffix | \`${SUFFIX_TEXT}\` |
           | Build timestamp | \`${BUILD_TIME_TEXT}\` |
@@ -666,13 +668,54 @@ jobs:
             fi
 
             SUSFS_COMMIT_SHA="$(git rev-parse HEAD)"
-            SUSVER="$([ -f VERSION ] && tr -d '\n' < VERSION || echo '2.0.0+')"
+            SUSFS_SHORT_SHA="$(git rev-parse --short=12 HEAD)"
+
+            detect_susfs_version() {
+              local ver=""
+              local source=""
+
+              if [ -f VERSION ]; then
+                ver="$(tr -d '[:space:]' < VERSION || true)"
+                source="VERSION"
+              fi
+
+              if [ -z "$ver" ]; then
+                ver="$(grep -RhoE 'SUSFS_VERSION[[:space:]]*["= ]+[vV]?[0-9]+\.[0-9]+\.[0-9]+[+A-Za-z0-9._-]*' . 2>/dev/null \
+                  | head -n1 \
+                  | grep -oE '[vV]?[0-9]+\.[0-9]+\.[0-9]+[+A-Za-z0-9._-]*' || true)"
+                [ -n "$ver" ] && source="SUSFS_VERSION grep"
+              fi
+
+              if [ -z "$ver" ]; then
+                ver="$(grep -RhoE '[vV]?[0-9]+\.[0-9]+\.[0-9]+[+A-Za-z0-9._-]*' \
+                  VERSION README.md README* kernel_patches include fs 2>/dev/null \
+                  | head -n1 || true)"
+                [ -n "$ver" ] && source="semantic grep"
+              fi
+
+              if [ -z "$ver" ]; then
+                ver="unknown-${SUSFS_SHORT_SHA}"
+                source="git commit fallback"
+              fi
+
+              echo "SUSFS_VERSION_SOURCE=${source}" >> "$GITHUB_ENV"
+              echo "$ver"
+            }
+
+            SUSVER="$(detect_susfs_version)"
 
             {
               echo "SUSFS_COMMIT_SHA=${SUSFS_COMMIT_SHA}"
+              echo "SUSFS_SHORT_SHA=${SUSFS_SHORT_SHA}"
               echo "SUSFS_BRANCH_NAME=${BR}"
               echo "SUSVER=${SUSVER}"
             } >> "$GITHUB_ENV"
+
+            echo "✅ SUSFS branch: ${BR}"
+            echo "✅ SUSFS version: ${SUSVER}"
+            echo "✅ SUSFS version source: ${SUSFS_VERSION_SOURCE:-unknown}"
+            echo "✅ SUSFS commit: ${SUSFS_COMMIT_SHA}"
+            echo "✅ SUSFS short commit: ${SUSFS_SHORT_SHA}"
 
             cd ..
 
@@ -1115,6 +1158,9 @@ jobs:
           echo "🚀 Starting kernel build at $(date)"
           echo "🔧 CPU cores: ${NPROC} | Build threads: ${BUILD_THREADS}"
           echo "📱 Device: ${DEVICE_NAME} (${DEVICE_CODENAME})"
+          echo "🔒 SUSFS version: ${SUSVER:-N/A}"
+          echo "🔒 SUSFS branch: ${SUSFS_BRANCH_NAME:-N/A}"
+          echo "🔒 SUSFS commit: ${SUSFS_COMMIT_SHA:-N/A}"
 
           USE_BAZEL=false
 
@@ -1262,7 +1308,7 @@ jobs:
 
           if [ -n "$ARTIFACT_URL" ] && [ "$ARTIFACT_URL" != "null" ]; then
             MODULE_ZIP="ksu_module_susfs_1.5.2+_CI.zip"
-            if curl -Lf -H "Authorization: Bearer ${{ github.token }}" -o "$MODULE_ZIP" "$ARTIFACT_URL"; then
+            if curl -Lf -H "Authorization: Bearer ${{ github.token }}" -o "$MODULE_ZIP"; then
               cp "$MODULE_ZIP" ./AnyKernel3/
             fi
           fi
@@ -1283,7 +1329,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          ZIP_NAME="AK3_ReSukiSU_${KSUVER}_${DEVICE_NAME_SAFE}_${TKERNEL_VERSION}${{ steps.suffix.outputs.value }}.zip"
+          if [ "${{ inputs.SUSFS_META }}" = "-1" ]; then
+            SUSFS_ZIP_PART="noSUSFS"
+          else
+            SUSFS_ZIP_PART="SUSFS-${SUSVER:-unknown}"
+          fi
+
+          ZIP_NAME="AK3_ReSukiSU_${KSUVER}_${SUSFS_ZIP_PART}_${DEVICE_NAME_SAFE}_${TKERNEL_VERSION}${{ steps.suffix.outputs.value }}.zip"
 
           echo "📦 Creating: $ZIP_NAME"
 
@@ -1327,7 +1379,7 @@ jobs:
         with:
           tag_name: ak3-${{ matrix.id }}-${{ github.run_id }}
           name: >-
-            ${{ env.DEVICE_NAME }} — ReSukiSU ${{ env.KSUVER }} — ${{ env.TKERNEL_VERSION }}
+            ${{ env.DEVICE_NAME }} — ReSukiSU ${{ env.KSUVER }} — SUSFS ${{ env.SUSVER }} — ${{ env.TKERNEL_VERSION }}
             ${{ inputs.LSM && '[LSM]' || '' }}
             ${{ inputs.SUSFS_META == '-1' && '[noSUSFS]' || '' }}
           body: |
@@ -1341,10 +1393,14 @@ jobs:
             | Kernel | `${{ env.TKERNEL_VERSION }}` |
             | KSU Version | `${{ env.KSUVER }}` |
             | KSU Commit | `${{ env.KSU_COMMIT_SHA }}` |
+            | SUSFS Enabled | `${{ inputs.SUSFS_META != '-1' && 'Yes' || 'No' }}` |
             | SUSFS Version | `${{ env.SUSVER }}` |
+            | SUSFS Version Source | `${{ env.SUSFS_VERSION_SOURCE }}` |
+            | SUSFS Branch | `${{ env.SUSFS_BRANCH_NAME }}` |
             | SUSFS Commit | `${{ env.SUSFS_COMMIT_SHA }}` |
+            | SUSFS Short Commit | `${{ env.SUSFS_SHORT_SHA }}` |
             | Branch | `common-${{ env.KERNEL_BRANCH }}` |
-            | Build threads | `${{ env.BUILD_THREADS || 'Auto' }}`
+            | Build threads | `${{ env.BUILD_THREADS || 'Auto' }}` |
             | Build run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
 
             ### Features
@@ -1437,8 +1493,10 @@ jobs:
           IMAGE_SHA256="${IMAGE_SHA256:-N/A}"
           IMAGE_SIZE="${IMAGE_SIZE:-N/A}"
           SUSVER="${SUSVER:-N/A}"
+          SUSFS_VERSION_SOURCE="${SUSFS_VERSION_SOURCE:-N/A}"
           SUSFS_BRANCH_NAME="${SUSFS_BRANCH_NAME:-N/A}"
           SUSFS_COMMIT_SHA="${SUSFS_COMMIT_SHA:-N/A}"
+          SUSFS_SHORT_SHA="${SUSFS_SHORT_SHA:-N/A}"
 
           if [ "${{ job.status }}" = "success" ]; then
             STATUS_TEXT="SUCCESS"
@@ -1500,8 +1558,10 @@ jobs:
           |----------|-------|
           | Enabled | ${{ inputs.SUSFS_META != '-1' && '✅ Yes' || '❌ No' }} |
           | Version | \`${SUSVER}\` |
+          | Version source | \`${SUSFS_VERSION_SOURCE}\` |
           | Branch | \`${SUSFS_BRANCH_NAME}\` |
           | Commit | \`${SUSFS_COMMIT_SHA}\` |
+          | Short commit | \`${SUSFS_SHORT_SHA}\` |
 
           ## Output
 
@@ -1576,12 +1636,14 @@ jobs:
           if [ "${{ job.status }}" = "success" ]; then
             echo "✅ BUILD SUCCESSFUL"
             echo "Device   : ${DEVICE_NAME:-N/A}"
+            echo "SUSFS    : ${SUSVER:-N/A}"
             echo "ZIP      : ${ZIP_NAME:-N/A}"
             echo "Size     : ${ZIP_SIZE:-N/A}"
             echo "Duration : ${BUILD_DURATION_TEXT:-N/A}"
           elif [ "${{ job.status }}" = "failure" ]; then
             echo "❌ BUILD FAILED"
             echo "Device   : ${DEVICE_NAME:-N/A}"
+            echo "SUSFS    : ${SUSVER:-N/A}"
             echo "Duration : ${BUILD_DURATION_TEXT:-N/A}"
             echo "Check the build_log artifact for details"
           else
