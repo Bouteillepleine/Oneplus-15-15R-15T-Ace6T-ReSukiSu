@@ -15,15 +15,6 @@ on:
           - oneplus15r
           - ace6t
 
-      MANAGER_SOURCE:
-        type: choice
-        description: "🔧 Manager variant"
-        required: true
-        default: MD3
-        options:
-          - MD3
-          - MD3_SPOOF
-
       KSU_SETUP_BRANCH:
         type: choice
         description: "🌿 ReSukiSU setup.sh branch"
@@ -57,12 +48,6 @@ on:
         required: false
         default: "5-gb2a876903b49-ab14541642-4k"
 
-      SUBLEVEL:
-        type: string
-        description: "🔢 Override kernel SUBLEVEL"
-        required: false
-        default: ""
-
       LSM:
         type: boolean
         description: "🛡️ Enable Baseband Guard"
@@ -77,7 +62,7 @@ on:
 
       BBR_ECN:
         type: boolean
-        description: "⚡ Enable BBR + ECN"
+        description: "⚡ Enable BBR + ECN (BBR becomes default congestion control, FQ default qdisc)"
         required: true
         default: true
 
@@ -116,7 +101,7 @@ permissions:
   actions: write
 
 concurrency:
-  group: resukisu-${{ github.ref }}-${{ github.run_id }}
+  group: resukisu-${{ github.ref }}-${{ inputs.DEVICE }}
   cancel-in-progress: true
 
 jobs:
@@ -134,20 +119,20 @@ jobs:
           set -euo pipefail
 
           if [ "${{ inputs.DEVICE }}" = "all" ]; then
-            MATRIX='{"include":[{"id":"oneplus15","name":"OnePlus 15","codename":"pineapple","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15"},{"id":"oneplus15t","name":"OnePlus 15T","codename":"pineapple","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15T"},{"id":"oneplus15r","name":"OnePlus 15R","codename":"aston","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"OnePlus15R"},{"id":"ace6t","name":"OnePlus Ace 6T","codename":"pineapple","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"Ace6T"}]}'
+            MATRIX='{"include":[{"id":"oneplus15","name":"OnePlus 15","codename":"Infinity","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15"},{"id":"oneplus15t","name":"OnePlus 15T","codename":"Infinity","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15T"},{"id":"oneplus15r","name":"OnePlus 15R","codename":"Infinity","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"OnePlus15R"},{"id":"ace6t","name":"OnePlus Ace 6T","codename":"Infinity","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"Ace6T"}]}'
           else
             case "${{ inputs.DEVICE }}" in
               oneplus15)
-                MATRIX='{"include":[{"id":"oneplus15","name":"OnePlus 15","codename":"pineapple","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15"}]}'
+                MATRIX='{"include":[{"id":"oneplus15","name":"OnePlus 15","codename":"Infinity","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15"}]}'
                 ;;
               oneplus15t)
-                MATRIX='{"include":[{"id":"oneplus15t","name":"OnePlus 15T","codename":"pineapple","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15T"}]}'
+                MATRIX='{"include":[{"id":"oneplus15t","name":"OnePlus 15T","codename":"Infinity","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15T"}]}'
                 ;;
               oneplus15r)
-                MATRIX='{"include":[{"id":"oneplus15r","name":"OnePlus 15R","codename":"aston","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"OnePlus15R"}]}'
+                MATRIX='{"include":[{"id":"oneplus15r","name":"OnePlus 15R","codename":"Infinity","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"OnePlus15R"}]}'
                 ;;
               ace6t)
-                MATRIX='{"include":[{"id":"ace6t","name":"OnePlus Ace 6T","codename":"pineapple","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"Ace6T"}]}'
+                MATRIX='{"include":[{"id":"ace6t","name":"OnePlus Ace 6T","codename":"Infinity","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"Ace6T"}]}'
                 ;;
               *)
                 echo "❌ Unknown device: ${{ inputs.DEVICE }}"
@@ -216,7 +201,9 @@ jobs:
             echo "BUILD_START_TIME=$(date +%s)"
             echo "BUILD_START_DATE=$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
             echo "SUSFS_COMMIT_SHA=N/A"
+            echo "SUSFS_SHORT_SHA=N/A"
             echo "SUSFS_BRANCH_NAME=N/A"
+            echo "SUSFS_VERSION_SOURCE=N/A"
             echo "SUSVER=N/A"
           } >> "$GITHUB_ENV"
 
@@ -235,8 +222,12 @@ jobs:
 
           SUSFS_META="${{ inputs.SUSFS_META }}"
           if [[ -n "$SUSFS_META" && "$SUSFS_META" != "-1" ]]; then
-            if [[ ! "$SUSFS_META" =~ ^([a-fA-F0-9]{7,40}|[0-9]+)$ ]]; then
-              echo "⚠️ WARNING: SUSFS_META does not look like a Git hash or HEAD~N number: '$SUSFS_META'"
+            # Rollback must be explicit HEAD~N; a bare number is ambiguous with a
+            # short commit hash (e.g. 1234567), so we no longer accept bare digits.
+            if [[ ! "$SUSFS_META" =~ ^HEAD~[0-9]+$ && ! "$SUSFS_META" =~ ^[a-fA-F0-9]{7,40}$ ]]; then
+              echo "❌ ERROR: SUSFS_META must be a git hash (7-40 hex chars), 'HEAD~N', '-1', or empty."
+              echo "Received: '$SUSFS_META'"
+              exit 1
             fi
           fi
 
@@ -246,12 +237,6 @@ jobs:
               echo "❌ ERROR: Invalid BUILD_TIME format: '$BUILD_TIME'"
               exit 1
             }
-          fi
-
-          SUBLEVEL="${{ inputs.SUBLEVEL }}"
-          if [[ -n "$SUBLEVEL" && ! "$SUBLEVEL" =~ ^[0-9]+$ ]]; then
-            echo "❌ ERROR: SUBLEVEL must be numeric, got: '$SUBLEVEL'"
-            exit 1
           fi
 
           echo "✅ All inputs validated"
@@ -266,7 +251,7 @@ jobs:
             SUSFS_VERSION_TEXT="N/A"
           elif [ -z "${{ inputs.SUSFS_META }}" ]; then
             SUSFS_STATUS="✅ Enabled"
-            SUSFS_VERSION_TEXT="Latest upstream"
+            SUSFS_VERSION_TEXT="Latest upstream — exact version detected after SUSFS clone"
           else
             SUSFS_STATUS="✅ Enabled pinned"
             SUSFS_VERSION_TEXT="${{ inputs.SUSFS_META }}"
@@ -299,10 +284,9 @@ jobs:
           | Codename | \`${DEVICE_CODENAME}\` |
           | SoC | \`${CPU}\` |
           | Branch | \`common-${KERNEL_BRANCH}\` |
-          | Manager | \`${{ inputs.MANAGER_SOURCE }}\` |
           | KSU_META | \`${{ inputs.KSU_META }}\` |
           | SUSFS | ${SUSFS_STATUS} |
-          | SUSFS version / rollback | \`${SUSFS_VERSION_TEXT}\` |
+          | SUSFS requested version / rollback | \`${SUSFS_VERSION_TEXT}\` |
           | SUSFS dev | \`${{ inputs.SUSFS_DEV }}\` |
           | Kernel suffix | \`${SUFFIX_TEXT}\` |
           | Build timestamp | \`${BUILD_TIME_TEXT}\` |
@@ -344,12 +328,42 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             python3 git curl jq libelf-dev build-essential flex bison libssl-dev \
             libncurses-dev liblz4-tool zlib1g-dev libxml2-utils rsync unzip gawk dos2unix \
-            kmod libdw-dev elfutils zip bc cpio wget
+            kmod libdw-dev elfutils zip bc cpio wget ccache
 
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/* || true
 
           echo "DURATION_ENV_SETUP=$(($(date +%s) - STEP_START))s" >> "$GITHUB_ENV"
+
+      - name: Setup ccache
+        id: ccache
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export CCACHE_DIR="$HOME/.ccache"
+          mkdir -p "$CCACHE_DIR"
+
+          ccache -M 5G
+          ccache -o compression=true
+          ccache -z
+
+          {
+            echo "CCACHE_DIR=${CCACHE_DIR}"
+            echo "USE_CCACHE=1"
+          } >> "$GITHUB_ENV"
+
+          # Cache key includes the target branch so different kernels don't
+          # thrash a single shared cache.
+          echo "cache_key=ccache-${{ matrix.id }}-${{ matrix.branch }}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ${{ steps.ccache.outputs.cache_key }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ steps.ccache.outputs.cache_key }}-
 
       - name: Configure Git
         shell: bash
@@ -521,11 +535,6 @@ jobs:
           echo "KANDROID_VERSION=${KANDROID_VERSION}" >> "$GITHUB_ENV"
           echo "KERNEL_VERSION=${KERNEL_VERSION}" >> "$GITHUB_ENV"
 
-          SUBLEVEL_INPUT="${{ inputs.SUBLEVEL }}"
-          if [ -n "$SUBLEVEL_INPUT" ]; then
-            sed -i "s/^\(SUBLEVEL[[:space:]]*=[[:space:]]*\).*/\1$SUBLEVEL_INPUT/" ./common/Makefile
-          fi
-
           NEW_VERSION="$(awk '/^VERSION =/ {v=$3} /^PATCHLEVEL =/ {p=$3} /^SUBLEVEL =/ {s=$3} END {print v"."p"."s}' ./common/Makefile)"
 
           {
@@ -580,23 +589,6 @@ jobs:
           apply_suffix "msm-kernel/scripts/setlocalversion"
           apply_suffix "external/dtc/scripts/setlocalversion"
 
-      - name: Resolve Manager Source
-        id: manager
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          case "${{ inputs.MANAGER_SOURCE }}" in
-            MD3_SPOOF)
-              echo "manager_branch=main" >> "$GITHUB_OUTPUT"
-              echo "manager_artifact=Spoofed-Manager-release" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "manager_branch=main" >> "$GITHUB_OUTPUT"
-              echo "manager_artifact=Manager-release" >> "$GITHUB_OUTPUT"
-              ;;
-          esac
-
       - name: Add ReSukiSU
         shell: bash
         run: |
@@ -622,8 +614,16 @@ jobs:
           fi
 
           if [[ -n "${MANUAL_HASH}" ]]; then
-            git fetch origin "${BRANCH_NAME}" --depth=100
-            git checkout "${MANUAL_HASH}"
+            # Try a shallow fetch first, then progressively deepen / unshallow
+            # so pinning an older commit doesn't fail on a truncated history.
+            if ! git fetch origin "${BRANCH_NAME}" --depth=100; then
+              git fetch origin "${BRANCH_NAME}" --depth=500 || true
+            fi
+            if ! git checkout "${MANUAL_HASH}" 2>/dev/null; then
+              echo "⚠️ Commit not in shallow history, unshallowing..."
+              git fetch --unshallow origin "${BRANCH_NAME}" || git fetch origin "${BRANCH_NAME}"
+              git checkout "${MANUAL_HASH}"
+            fi
           fi
 
           KSU_COMMIT_SHA="$(git rev-parse HEAD)"
@@ -658,21 +658,58 @@ jobs:
 
             SUSFS_META="${{ inputs.SUSFS_META }}"
             if [ -n "$SUSFS_META" ]; then
-              if [[ "$SUSFS_META" =~ ^[0-9]+$ ]]; then
-                git checkout HEAD~"$SUSFS_META"
-              else
-                git checkout "$SUSFS_META"
-              fi
+              git checkout "$SUSFS_META"
             fi
 
             SUSFS_COMMIT_SHA="$(git rev-parse HEAD)"
-            SUSVER="$([ -f VERSION ] && tr -d '\n' < VERSION || echo '2.0.0+')"
+            SUSFS_SHORT_SHA="$(git rev-parse --short=12 HEAD)"
+
+            detect_susfs_version() {
+              local ver=""
+              local source=""
+
+              if [ -f VERSION ]; then
+                ver="$(tr -d '[:space:]' < VERSION || true)"
+                source="VERSION"
+              fi
+
+              if [ -z "$ver" ]; then
+                ver="$(grep -RhoE 'SUSFS_VERSION[[:space:]]*["= ]+[vV]?[0-9]+\.[0-9]+\.[0-9]+[+A-Za-z0-9._-]*' . 2>/dev/null \
+                  | head -n1 \
+                  | grep -oE '[vV]?[0-9]+\.[0-9]+\.[0-9]+[+A-Za-z0-9._-]*' || true)"
+                [ -n "$ver" ] && source="SUSFS_VERSION grep"
+              fi
+
+              if [ -z "$ver" ]; then
+                ver="$(grep -RhoE '[vV]?[0-9]+\.[0-9]+\.[0-9]+[+A-Za-z0-9._-]*' \
+                  VERSION README.md README* kernel_patches include fs 2>/dev/null \
+                  | head -n1 || true)"
+                [ -n "$ver" ] && source="semantic grep"
+              fi
+
+              if [ -z "$ver" ]; then
+                ver="unknown-${SUSFS_SHORT_SHA}"
+                source="git commit fallback"
+              fi
+
+              echo "SUSFS_VERSION_SOURCE=${source}" >> "$GITHUB_ENV"
+              echo "$ver"
+            }
+
+            SUSVER="$(detect_susfs_version)"
 
             {
               echo "SUSFS_COMMIT_SHA=${SUSFS_COMMIT_SHA}"
+              echo "SUSFS_SHORT_SHA=${SUSFS_SHORT_SHA}"
               echo "SUSFS_BRANCH_NAME=${BR}"
               echo "SUSVER=${SUSVER}"
             } >> "$GITHUB_ENV"
+
+            echo "✅ SUSFS branch: ${BR}"
+            echo "✅ SUSFS version: ${SUSVER}"
+            echo "✅ SUSFS version source: ${SUSFS_VERSION_SOURCE:-unknown}"
+            echo "✅ SUSFS commit: ${SUSFS_COMMIT_SHA}"
+            echo "✅ SUSFS short commit: ${SUSFS_SHORT_SHA}"
 
             cd ..
 
@@ -811,7 +848,7 @@ jobs:
           cd kernel_workspace/common
 
           CONFIG_FILE=./arch/arm64/configs/gki_defconfig
-          MANAGER_BRANCH="${{ steps.manager.outputs.manager_branch }}"
+          MANAGER_BRANCH="main"
 
           append_config() {
             local entry="$1"
@@ -884,6 +921,11 @@ jobs:
             force_config "CONFIG_TCP_CONG_BIC=n"
             force_config "CONFIG_TCP_CONG_WESTWOOD=n"
             force_config "CONFIG_TCP_CONG_HTCP=n"
+            # Make BBR the default congestion control and FQ the default qdisc,
+            # otherwise BBR is merely available but Cubic/pfifo_fast stay active.
+            force_config "CONFIG_DEFAULT_BBR=y"
+            force_config "CONFIG_DEFAULT_TCP_CONG=\"bbr\""
+            force_config "CONFIG_DEFAULT_NET_SCH=\"fq\""
             append_config "CONFIG_IP_ECN=y"
             append_config "CONFIG_TCP_ECN=y"
             append_config "CONFIG_IPV6_ECN=y"
@@ -916,6 +958,14 @@ jobs:
             append_config "CONFIG_IP6_NF_NAT=y"
             append_config "CONFIG_IP6_NF_TARGET_MASQUERADE=y"
           fi
+
+          # === TCP throughput helpers (safe, always-on) ===
+          # These have no downside for a phone and improve real-world networking.
+          echo "# === Networking extras ===" >> "$CONFIG_FILE"
+          append_config "CONFIG_TCP_CONG_CUBIC=y"
+          append_config "CONFIG_NET_SCH_CAKE=y"
+          append_config "CONFIG_NET_SCH_FQ_CODEL=y"
+          append_config "CONFIG_TLS=y"
 
           sed -i 's/check_defconfig//' ./build.config.gki || true
 
@@ -993,7 +1043,7 @@ jobs:
           CONFIG_FILE="./arch/arm64/configs/gki_defconfig"
 
           echo "🔎 Important defconfig entries:"
-          grep -nE 'CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=|CONFIG_KPM=|CONFIG_TCP_CONG_BBR=|CONFIG_IP_SET=|CONFIG_DEBUG_KERNEL=' "$CONFIG_FILE" || true
+          grep -nE 'CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=|CONFIG_KPM=|CONFIG_TCP_CONG_BBR=|CONFIG_DEFAULT_BBR=|CONFIG_IP_SET=|CONFIG_DEBUG_KERNEL=' "$CONFIG_FILE" || true
 
           if grep -q '^CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y' "$CONFIG_FILE"; then
             echo "❌ ERROR: CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS is enabled"
@@ -1112,9 +1162,18 @@ jobs:
 
           export MAKEFLAGS="-j${BUILD_THREADS}"
 
+          # Wire ccache into the compiler wrappers if it's available.
+          if [ "${USE_CCACHE:-0}" = "1" ] && command -v ccache >/dev/null 2>&1; then
+            export CCACHE_EXEC="$(command -v ccache)"
+            echo "🧊 ccache enabled: $(ccache -s | tr '\n' ' ' || true)"
+          fi
+
           echo "🚀 Starting kernel build at $(date)"
           echo "🔧 CPU cores: ${NPROC} | Build threads: ${BUILD_THREADS}"
           echo "📱 Device: ${DEVICE_NAME} (${DEVICE_CODENAME})"
+          echo "🔒 SUSFS version: ${SUSVER:-N/A}"
+          echo "🔒 SUSFS branch: ${SUSFS_BRANCH_NAME:-N/A}"
+          echo "🔒 SUSFS commit: ${SUSFS_COMMIT_SHA:-N/A}"
 
           USE_BAZEL=false
 
@@ -1183,6 +1242,11 @@ jobs:
             fi
           fi
 
+          if [ "${USE_CCACHE:-0}" = "1" ] && command -v ccache >/dev/null 2>&1; then
+            echo "🧊 ccache stats after build:"
+            ccache -s || true
+          fi
+
           echo "✅ Kernel build completed at $(date)"
           echo "DURATION_BUILD_KERNEL=$(($(date +%s) - STEP_START))s" >> "$GITHUB_ENV"
 
@@ -1234,38 +1298,128 @@ jobs:
           cp "$image_path" ./AnyKernel3/Image
           cp "$image_path" kernel_workspace/out/Final-Image-Find/Image
 
-      - name: Download Latest SUSFS Module from CI
+      - name: Build Patched GKI boot.img
+        id: bootimg
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "${GITHUB_WORKSPACE}"
+
+          # The built kernel Image (already located by Make AnyKernel3).
+          IMAGE_ABS=""
+          for c in \
+            "${GITHUB_WORKSPACE}/kernel_workspace/out/Final-Image-Find/Image" \
+            "${GITHUB_WORKSPACE}/AnyKernel3/Image" ; do
+            [ -f "$c" ] && IMAGE_ABS="$c" && break
+          done
+          if [ -z "$IMAGE_ABS" ]; then
+            echo "⚠️ Built kernel Image not found — skipping boot.img"
+            exit 0
+          fi
+
+          # --- Fetch a Linux (x86_64) magiskboot from the Magisk APK ----------
+          MB="/tmp/magiskboot"
+          if [ ! -x "$MB" ]; then
+            APK_URL="$(curl -sf https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
+              | jq -r '.assets[]? | select(.name|endswith(".apk")) | .browser_download_url' | head -1 || true)"
+            if [ -n "${APK_URL:-}" ] && curl -Lf --proto '=https' --tlsv1.2 -o /tmp/magisk.apk "$APK_URL"; then
+              unzip -o /tmp/magisk.apk 'lib/x86_64/libmagiskboot.so' -d /tmp/mb_x >/dev/null 2>&1 || true
+              if [ -f /tmp/mb_x/lib/x86_64/libmagiskboot.so ]; then
+                cp /tmp/mb_x/lib/x86_64/libmagiskboot.so "$MB"
+                chmod +x "$MB"
+              fi
+            fi
+          fi
+
+          # --- Locate a generic GKI boot.img from THIS build's dist output ----
+          # This is the version-matched generic image (kernel + GKI ramdisk),
+          # not the OnePlus firmware image.
+          workdir="$(mktemp -d)"
+          gki_boot=""
+          for c in \
+            kernel_workspace/bazel-bin/common/kernel_aarch64/dist/boot.img \
+            kernel_workspace/bazel-bin/common/kernel_aarch64/dist/boot-lz4.img \
+            kernel_workspace/bazel-bin/common/kernel_aarch64/dist/boot-gz.img ; do
+            [ -f "$c" ] && gki_boot="$(readlink -f "$c")" && break
+          done
+          if [ -z "$gki_boot" ]; then
+            tarball="$(find kernel_workspace -name 'boot-img.tar.gz' -type f 2>/dev/null | head -1 || true)"
+            if [ -n "$tarball" ]; then
+              tar -xzf "$tarball" -C "$workdir" || true
+              gki_boot="$(find "$workdir" -maxdepth 2 -name 'boot*.img' -type f | sort | head -1 || true)"
+            fi
+          fi
+
+          OUT="${GITHUB_WORKSPACE}/boot_patched.img"
+
+          if [ -n "$gki_boot" ] && [ -x "$MB" ]; then
+            # Preferred: swap the kernel inside the real GKI boot.img so the
+            # header (os_version, patch level, cmdline, compression) is preserved.
+            echo "🔧 Repacking GKI boot.img via magiskboot: $gki_boot"
+            cd "$workdir"
+            cp "$gki_boot" ./base_boot.img
+            "$MB" unpack ./base_boot.img
+            cp "$IMAGE_ABS" ./kernel
+            "$MB" repack ./base_boot.img "$OUT"
+            cd "${GITHUB_WORKSPACE}"
+          else
+            # Fallback: build a kernel-only header-v4 boot.img with mkbootimg.
+            # Valid for OP15 because its ramdisk lives in init_boot, so boot is
+            # kernel-only anyway.
+            echo "ℹ️ No dist boot.img/magiskboot — building via mkbootimg"
+            mkb="$(find kernel_workspace -path '*mkbootimg*' -name 'mkbootimg.py' 2>/dev/null | head -1 || true)"
+            if [ -z "$mkb" ]; then
+              echo "⚠️ mkbootimg not found — skipping boot.img"
+              exit 0
+            fi
+            python3 "$mkb" --header_version 4 --kernel "$IMAGE_ABS" --output "$OUT"
+          fi
+
+          if [ ! -f "$OUT" ]; then
+            echo "⚠️ boot.img was not produced"
+            exit 0
+          fi
+
+          BOOT_IMG_NAME="boot_ReSukiSU_${KSUVER}_${DEVICE_NAME_SAFE}_${TKERNEL_VERSION}.img"
+          mv "$OUT" "${GITHUB_WORKSPACE}/${BOOT_IMG_NAME}"
+          echo "BOOT_IMG_NAME=${BOOT_IMG_NAME}" >> "$GITHUB_ENV"
+          echo "✅ Patched boot image: ${BOOT_IMG_NAME}"
+
+      - name: Bundle SUSFS Module
         if: ${{ inputs.SUSFS_META != '-1' }}
         continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
 
-          LATEST_RUN_ID=$(curl -sf -H "Authorization: Bearer ${{ github.token }}" \
-            "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs?status=success&per_page=10" | \
-            jq -r '.workflow_runs[] | select(.head_branch == "v1.5.2+") | .id' | head -n 1)
+          # Always pull the published release zip. The old CI-artifact path could
+          # not work: GITHUB_TOKEN has no actions:read on the foreign repo, and
+          # artifact downloads arrive wrapped in an extra zip layer. nightly.link
+          # is used as a no-auth fallback if the release URL is unavailable.
+          RELEASE_URL="https://github.com/sidex15/ksu_module_susfs/releases/download/v1.5.2+/ksu_module_susfs_1.5.2+.zip"
+          NIGHTLY_URL="https://nightly.link/sidex15/susfs4ksu-module/workflows/build/v1.5.2+/ksu_module_susfs.zip"
+          MODULE_ZIP="ksu_module_susfs_1.5.2+.zip"
 
-          if [ -z "$LATEST_RUN_ID" ]; then
-            RELEASE_URL="https://github.com/sidex15/ksu_module_susfs/releases/download/v1.5.2+/ksu_module_susfs_1.5.2+.zip"
-            MODULE_ZIP="ksu_module_susfs_1.5.2+_Release.zip"
-
-            if curl -Lf -o "$MODULE_ZIP" "$RELEASE_URL"; then
-              cp "$MODULE_ZIP" ./AnyKernel3/
-            fi
-
+          if curl -Lf --proto '=https' --tlsv1.2 -o "$MODULE_ZIP" "$RELEASE_URL"; then
+            echo "✅ SUSFS module downloaded from release"
+          elif curl -Lf --proto '=https' --tlsv1.2 -o "$MODULE_ZIP" "$NIGHTLY_URL"; then
+            echo "✅ SUSFS module downloaded from nightly.link"
+          else
+            echo "⚠️ Could not download SUSFS module — zip will ship without it"
             exit 0
           fi
 
-          ARTIFACT_URL=$(curl -sf -H "Authorization: Bearer ${{ github.token }}" \
-            "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs/$LATEST_RUN_ID/artifacts" | \
-            jq -r '.artifacts[0].archive_download_url')
-
-          if [ -n "$ARTIFACT_URL" ] && [ "$ARTIFACT_URL" != "null" ]; then
-            MODULE_ZIP="ksu_module_susfs_1.5.2+_CI.zip"
-            if curl -Lf -H "Authorization: Bearer ${{ github.token }}" -o "$MODULE_ZIP" "$ARTIFACT_URL"; then
-              cp "$MODULE_ZIP" ./AnyKernel3/
-            fi
+          # Sanity check: must be a real zip, not an HTML error page.
+          if ! unzip -tq "$MODULE_ZIP" >/dev/null 2>&1; then
+            echo "⚠️ Downloaded file is not a valid zip — skipping"
+            rm -f "$MODULE_ZIP"
+            exit 0
           fi
+
+          cp "$MODULE_ZIP" ./AnyKernel3/
+          echo "✅ SUSFS module bundled: $MODULE_ZIP"
 
       - name: Set ZIP Suffix
         id: suffix
@@ -1283,7 +1437,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          ZIP_NAME="AK3_ReSukiSU_${KSUVER}_${DEVICE_NAME_SAFE}_${TKERNEL_VERSION}${{ steps.suffix.outputs.value }}.zip"
+          if [ "${{ inputs.SUSFS_META }}" = "-1" ]; then
+            SUSFS_ZIP_PART="noSUSFS"
+          else
+            SUSFS_ZIP_PART="SUSFS-${SUSVER:-unknown}"
+          fi
+
+          ZIP_NAME="AK3_ReSukiSU_${KSUVER}_${SUSFS_ZIP_PART}_${DEVICE_NAME_SAFE}_${TKERNEL_VERSION}${{ steps.suffix.outputs.value }}.zip"
 
           echo "📦 Creating: $ZIP_NAME"
 
@@ -1321,13 +1481,28 @@ jobs:
 
           unzip -l "${GITHUB_WORKSPACE}/${ZIP_NAME}" | grep -E "(Image|ksu_module_susfs|anykernel\.sh)" || true
 
+      - name: Generate SHA256 Checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "${GITHUB_WORKSPACE}"
+
+          sha256sum "${ZIP_NAME}" > "${ZIP_NAME}.sha256"
+          echo "🔐 $(cat "${ZIP_NAME}.sha256")"
+
+          if [ -n "${BOOT_IMG_NAME:-}" ] && [ -f "${BOOT_IMG_NAME}" ]; then
+            sha256sum "${BOOT_IMG_NAME}" > "${BOOT_IMG_NAME}.sha256"
+            echo "🔐 $(cat "${BOOT_IMG_NAME}.sha256")"
+          fi
+
       - name: Upload AK3 ZIP to GitHub Release
         if: ${{ inputs.CREATE_RELEASE == true }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ak3-${{ matrix.id }}-${{ github.run_id }}
           name: >-
-            ${{ env.DEVICE_NAME }} — ReSukiSU ${{ env.KSUVER }} — ${{ env.TKERNEL_VERSION }}
+            ${{ env.DEVICE_NAME }} — ReSukiSU ${{ env.KSUVER }} — SUSFS ${{ env.SUSVER }} — ${{ env.TKERNEL_VERSION }}
             ${{ inputs.LSM && '[LSM]' || '' }}
             ${{ inputs.SUSFS_META == '-1' && '[noSUSFS]' || '' }}
           body: |
@@ -1341,20 +1516,37 @@ jobs:
             | Kernel | `${{ env.TKERNEL_VERSION }}` |
             | KSU Version | `${{ env.KSUVER }}` |
             | KSU Commit | `${{ env.KSU_COMMIT_SHA }}` |
+            | SUSFS Enabled | `${{ inputs.SUSFS_META != '-1' && 'Yes' || 'No' }}` |
             | SUSFS Version | `${{ env.SUSVER }}` |
+            | SUSFS Version Source | `${{ env.SUSFS_VERSION_SOURCE }}` |
+            | SUSFS Branch | `${{ env.SUSFS_BRANCH_NAME }}` |
             | SUSFS Commit | `${{ env.SUSFS_COMMIT_SHA }}` |
+            | SUSFS Short Commit | `${{ env.SUSFS_SHORT_SHA }}` |
             | Branch | `common-${{ env.KERNEL_BRANCH }}` |
-            | Build threads | `${{ env.BUILD_THREADS || 'Auto' }}`
+            | Build threads | `${{ env.BUILD_THREADS || 'Auto' }}` |
             | Build run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
 
             ### Features
-            - BBR + ECN: `${{ inputs.BBR_ECN }}`
+            - BBR + ECN (default cc): `${{ inputs.BBR_ECN }}`
             - Netfilter / IPSet: `${{ inputs.NETFILTER }}`
             - Baseband Guard: `${{ inputs.LSM }}`
             - Unicode Bypass: `${{ inputs.UNICODE_BYPASS }}`
             - SUSFS: `${{ inputs.SUSFS_META != '-1' && 'Enabled' || 'Disabled' }}`
-          files: ${{ env.ZIP_NAME }}
-          fail_on_unmatched_files: true
+
+            ### Flashing
+            - `boot_ReSukiSU_*.img` → fastboot: `fastboot flash boot boot_ReSukiSU_*.img`
+            - AK3 zip → flash in KernelSU / custom recovery (patches boot on-device)
+
+            ### Verify download
+            ```
+            sha256sum -c ${{ env.ZIP_NAME }}.sha256
+            ```
+          files: |
+            ${{ env.ZIP_NAME }}
+            ${{ env.ZIP_NAME }}.sha256
+            ${{ env.BOOT_IMG_NAME }}
+            ${{ env.BOOT_IMG_NAME }}.sha256
+          fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -1362,8 +1554,12 @@ jobs:
         if: ${{ inputs.CREATE_RELEASE != true }}
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZIP_NAME }}
-          path: ${{ env.ZIP_NAME }}
+          name: artifact-${{ matrix.id }}-${{ github.run_id }}
+          path: |
+            ${{ env.ZIP_NAME }}
+            ${{ env.ZIP_NAME }}.sha256
+            ${{ env.BOOT_IMG_NAME }}
+            ${{ env.BOOT_IMG_NAME }}.sha256
           retention-days: 30
           if-no-files-found: error
 
@@ -1415,6 +1611,16 @@ jobs:
           echo "IMAGE_SHA256=${IMAGE_SHA256}" >> "$GITHUB_ENV"
           echo "IMAGE_SIZE=${IMAGE_SIZE}" >> "$GITHUB_ENV"
 
+          BOOT_IMG_SHA256="N/A"
+          BOOT_IMG_SIZE="N/A"
+          if [ -n "${BOOT_IMG_NAME:-}" ] && [ -f "${GITHUB_WORKSPACE}/${BOOT_IMG_NAME}" ]; then
+            BOOT_IMG_SHA256=$(sha256sum "${GITHUB_WORKSPACE}/${BOOT_IMG_NAME}" | awk '{print $1}')
+            BOOT_IMG_SIZE=$(du -h "${GITHUB_WORKSPACE}/${BOOT_IMG_NAME}" | awk '{print $1}')
+          fi
+
+          echo "BOOT_IMG_SHA256=${BOOT_IMG_SHA256}" >> "$GITHUB_ENV"
+          echo "BOOT_IMG_SIZE=${BOOT_IMG_SIZE}" >> "$GITHUB_ENV"
+
       - name: Build Summary
         if: always()
         shell: bash
@@ -1436,9 +1642,14 @@ jobs:
           ZIP_SIZE="${ZIP_SIZE:-N/A}"
           IMAGE_SHA256="${IMAGE_SHA256:-N/A}"
           IMAGE_SIZE="${IMAGE_SIZE:-N/A}"
+          BOOT_IMG_NAME="${BOOT_IMG_NAME:-N/A}"
+          BOOT_IMG_SHA256="${BOOT_IMG_SHA256:-N/A}"
+          BOOT_IMG_SIZE="${BOOT_IMG_SIZE:-N/A}"
           SUSVER="${SUSVER:-N/A}"
+          SUSFS_VERSION_SOURCE="${SUSFS_VERSION_SOURCE:-N/A}"
           SUSFS_BRANCH_NAME="${SUSFS_BRANCH_NAME:-N/A}"
           SUSFS_COMMIT_SHA="${SUSFS_COMMIT_SHA:-N/A}"
+          SUSFS_SHORT_SHA="${SUSFS_SHORT_SHA:-N/A}"
 
           if [ "${{ job.status }}" = "success" ]; then
             STATUS_TEXT="SUCCESS"
@@ -1500,8 +1711,10 @@ jobs:
           |----------|-------|
           | Enabled | ${{ inputs.SUSFS_META != '-1' && '✅ Yes' || '❌ No' }} |
           | Version | \`${SUSVER}\` |
+          | Version source | \`${SUSFS_VERSION_SOURCE}\` |
           | Branch | \`${SUSFS_BRANCH_NAME}\` |
           | Commit | \`${SUSFS_COMMIT_SHA}\` |
+          | Short commit | \`${SUSFS_SHORT_SHA}\` |
 
           ## Output
 
@@ -1512,6 +1725,9 @@ jobs:
           | ZIP SHA256 | \`${ZIP_SHA256}\` |
           | Image Size | ${IMAGE_SIZE} |
           | Image SHA256 | \`${IMAGE_SHA256}\` |
+          | Boot Image | \`${BOOT_IMG_NAME}\` |
+          | Boot Image Size | ${BOOT_IMG_SIZE} |
+          | Boot Image SHA256 | \`${BOOT_IMG_SHA256}\` |
           | Release | ${RELEASE_CELL} |
 
           ## ⚡ Performance
@@ -1561,6 +1777,8 @@ jobs:
               kernel_workspace/Action-Build \
               /tmp/ksu_setup.sh \
               /tmp/bbg_setup.sh \
+              /tmp/magisk.apk \
+              /tmp/mb_x \
               /tmp/* \
               /var/tmp/* 2>/dev/null || true
           fi
@@ -1576,12 +1794,15 @@ jobs:
           if [ "${{ job.status }}" = "success" ]; then
             echo "✅ BUILD SUCCESSFUL"
             echo "Device   : ${DEVICE_NAME:-N/A}"
+            echo "SUSFS    : ${SUSVER:-N/A}"
             echo "ZIP      : ${ZIP_NAME:-N/A}"
+            echo "Boot img : ${BOOT_IMG_NAME:-N/A}"
             echo "Size     : ${ZIP_SIZE:-N/A}"
             echo "Duration : ${BUILD_DURATION_TEXT:-N/A}"
           elif [ "${{ job.status }}" = "failure" ]; then
             echo "❌ BUILD FAILED"
             echo "Device   : ${DEVICE_NAME:-N/A}"
+            echo "SUSFS    : ${SUSVER:-N/A}"
             echo "Duration : ${BUILD_DURATION_TEXT:-N/A}"
             echo "Check the build_log artifact for details"
           else
