@@ -451,6 +451,7 @@ jobs:
           retry_command repo init \
             -u https://android.googlesource.com/kernel/manifest \
             -b "common-${KERNEL_BRANCH}" \
+            --use-superproject \
             --depth=1 \
             --no-clone-bundle \
             --no-tags
