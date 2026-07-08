@@ -451,10 +451,26 @@ jobs:
           retry_command repo init \
             -u https://android.googlesource.com/kernel/manifest \
             -b "common-${KERNEL_BRANCH}" \
-            --use-superproject \
             --depth=1 \
             --no-clone-bundle \
             --no-tags
+          # --- Work around Google retiring monthly GKI heads on kernel/common ---
+          # If the manifest pins "common" to a head that no longer exists but a
+          # deprecated/<rev> head does, repoint to it (same commits, just renamed).
+          MANIFEST_XML=".repo/manifests/default.xml"
+          if [ -f "$MANIFEST_XML" ]; then
+            COMMON_REV="$(sed -nE 's/.*path="common"[^>]*revision="([^"]+)".*/\1/p' "$MANIFEST_XML" | head -n1)"
+            COMMON_URL="https://android.googlesource.com/kernel/common"
+            if [ -n "$COMMON_REV" ] && ! git ls-remote --exit-code "$COMMON_URL" "refs/heads/$COMMON_REV" >/dev/null 2>&1; then
+              if git ls-remote --exit-code "$COMMON_URL" "refs/heads/deprecated/$COMMON_REV" >/dev/null 2>&1; then
+                echo "⚠️ GKI head '$COMMON_REV' retired upstream — repointing common to deprecated/$COMMON_REV"
+                sed -i -E "s#(revision|upstream|dest-branch)=\"${COMMON_REV}\"#\1=\"deprecated/${COMMON_REV}\"#g" "$MANIFEST_XML"
+              else
+                echo "❌ GKI head '$COMMON_REV' missing and no deprecated/ fallback exists"
+              fi
+            fi
+          fi
+
 
           SYNC_JOBS="$(nproc)"
           [ "$SYNC_JOBS" -gt 8 ] && SYNC_JOBS=8
@@ -468,6 +484,7 @@ jobs:
             --prune \
             --no-clone-bundle \
             --no-tags \
+            --no-manifest-update \
             --force-sync \
             --current-branch \
             --optimized-fetch \
@@ -492,6 +509,7 @@ jobs:
               --prune \
               --no-clone-bundle \
               --no-tags \
+              --no-manifest-update \
               --force-sync \
               --current-branch \
               --optimized-fetch \
