@@ -164,7 +164,7 @@ jobs:
           fi
 
           PACKAGE_MATRIX="$(echo "$DEVICES" | jq -c '{include: .}')"
-          BUILD_MATRIX="$(echo "$DEVICES" | jq -c '{include: (group_by(.build_key) | map({build_key: .[0].build_key, branch: .[0].branch, cpu: .[0].cpu}))}')"
+          BUILD_MATRIX="$(echo "$DEVICES" | jq -c '{include: (group_by(.build_key) | map({build_key: .[0].build_key, branch: .[0].branch, cpu: .[0].cpu, models: (map(.name) | join(" / "))}))}')"
 
           echo "package_matrix=$PACKAGE_MATRIX" >> "$GITHUB_OUTPUT"
           echo "build_matrix=$BUILD_MATRIX" >> "$GITHUB_OUTPUT"
@@ -183,7 +183,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-kernel:
     name: >-
-      🛠️ ${{ matrix.build_key }}
+      🛠️ ${{ matrix.models }}
       ${{ inputs.LSM && '[LSM]' || '' }}
       ${{ inputs.SUSFS_META == '-1' && '[noSUSFS]' || '' }}
 
@@ -203,8 +203,9 @@ jobs:
       XUS_FIX_ENABLED: ${{ inputs.XUS_FIX && '1' || '0' }}
       SUSFS_DEV_ENABLED: ${{ inputs.SUSFS_DEV && '1' || '0' }}
       SPACE_NOCLEAN_ENABLED: ${{ inputs.SPACE_NOCLEAN && '1' || '0' }}
-      BAZEL_REPO_CACHE: /home/runner/.cache/bazel-repo
-      BAZEL_DISK_CACHE: /home/runner/.cache/bazel-disk
+      BAZEL_REPO_CACHE: /mnt/ci/bazel-repo
+      BAZEL_DISK_CACHE: /mnt/ci/bazel-disk
+      BAZEL_OUTPUT_ROOT: /mnt/ci/bazel-out
 
     steps:
       - name: Checkout
@@ -310,6 +311,18 @@ jobs:
           | Unicode bypass | \`${{ inputs.UNICODE_BYPASS }}\` |
           EOF
 
+      - name: Prepare build space on /mnt
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GitHub runners keep most free space on /mnt; build there so the
+          # small root FS does not fill during sync + Kleaf/Bazel compile.
+          sudo mkdir -p /mnt/ci/kernel_workspace "${BAZEL_OUTPUT_ROOT}" "${BAZEL_REPO_CACHE}" "${BAZEL_DISK_CACHE}"
+          sudo chown -R "$USER":"$USER" /mnt/ci
+          ln -sfn /mnt/ci/kernel_workspace "${GITHUB_WORKSPACE}/kernel_workspace"
+          echo "🗂️ kernel_workspace -> $(readlink -f "${GITHUB_WORKSPACE}/kernel_workspace")"
+          df -h / /mnt
+
       - name: Free Disk Space
         if: ${{ inputs.SPACE_NOCLEAN != true }}
         shell: bash
@@ -356,8 +369,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            /home/runner/.cache/bazel-repo
-            /home/runner/.cache/bazel-disk
+            /mnt/ci/bazel-repo
+            /mnt/ci/bazel-disk
           key: bazel-${{ matrix.build_key }}-${{ github.run_id }}
           restore-keys: |
             bazel-${{ matrix.build_key }}-
@@ -1077,7 +1090,7 @@ jobs:
           fi
 
           set +e
-          tools/bazel build \
+          tools/bazel --output_user_root="${BAZEL_OUTPUT_ROOT}" build \
             --config=fast \
             --repository_cache="${BAZEL_REPO_CACHE}" \
             --disk_cache="${BAZEL_DISK_CACHE}" \
@@ -1105,7 +1118,7 @@ jobs:
             exit 1
           fi
 
-          tools/bazel build \
+          tools/bazel --output_user_root="${BAZEL_OUTPUT_ROOT}" build \
             --config=fast \
             --repository_cache="${BAZEL_REPO_CACHE}" \
             --disk_cache="${BAZEL_DISK_CACHE}" \
@@ -1230,7 +1243,7 @@ jobs:
             HEARTBEAT_PID=$!
 
             set +e
-            time tools/bazel build \
+            time tools/bazel --output_user_root="${BAZEL_OUTPUT_ROOT}" build \
               "${BAZEL_ARGS[@]}" \
               //common:kernel_aarch64_dist 2>&1 | tee "$ROOT/build.log"
             BUILD_STATUS="${PIPESTATUS[0]}"
