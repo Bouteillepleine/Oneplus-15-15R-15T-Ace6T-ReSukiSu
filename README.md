@@ -14,6 +14,14 @@ It syncs Android GKI sources, adds **ReSukiSU**, optionally applies **SUSFS**, a
 | OnePlus 15T | `oneplus15t` | `Infinity` | `sm8850` |
 | OnePlus 15R | `oneplus15r` | `Infinity` | `sm8845` |
 | OnePlus Ace 6T | `ace6t` | `Infinity` | `sm8845` |
+| OnePlus Pad 3 Pro | `pad3pro` | `canoe` | `sm8850` |
+| OnePlus Pad 4 | `pad4` | `canoe` | `sm8850` |
+
+> This builder produces a **generic GKI** `kernel_aarch64` Image, so the device
+> only selects the GKI branch and the ZIP name — devices sharing a branch get an
+> identical Image. `sm8850` (OP15 / 15T / Pad 3 Pro / Pad 4) builds from
+> `android16-6.12-2025-06`; `sm8845` (15R / Ace 6T) from `android16-6.12-2025-09`.
+> `DEVICE=all` therefore compiles just those two unique kernels.
 
 ---
 

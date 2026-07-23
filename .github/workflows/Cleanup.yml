@@ -32,6 +32,8 @@ on:
           - oneplus15t
           - oneplus15r
           - ace6t
+          - pad3pro
+          - pad4
           - ccache
           - bazel
           - gki-sources

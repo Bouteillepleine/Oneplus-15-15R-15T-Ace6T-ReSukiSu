@@ -14,6 +14,8 @@ on:
           - oneplus15t
           - oneplus15r
           - ace6t
+          - pad3pro
+          - pad4
 
       KSU_SETUP_BRANCH:
         type: choice
@@ -148,6 +150,12 @@ jobs:
                 ;;
               ace6t)
                 MATRIX='{"include":[{"id":"ace6t","name":"OnePlus Ace 6T","codename":"Infinity","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"Ace6T"}]}'
+                ;;
+              pad3pro)
+                MATRIX='{"include":[{"id":"pad3pro","name":"OnePlus Pad 3 Pro","codename":"canoe","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlusPad3Pro"}]}'
+                ;;
+              pad4)
+                MATRIX='{"include":[{"id":"pad4","name":"OnePlus Pad 4","codename":"canoe","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlusPad4"}]}'
                 ;;
               *)
                 echo "❌ Unknown device: ${{ inputs.DEVICE }}"
