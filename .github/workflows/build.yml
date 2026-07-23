@@ -447,6 +447,32 @@ jobs:
             --no-clone-bundle \
             --no-tags
 
+          # --- Redirect a retired GKI branch to its deprecated/ head ----------
+          # Google periodically moves aged android16-6.12-YYYY-MM branches under
+          # refs/heads/deprecated/, but the manifest still pins the bare name, so
+          # `repo sync` dies with "couldn't find remote ref". If our target common
+          # branch is gone yet still exists under deprecated/, drop a local_manifest
+          # that redirects the kernel/common project there (survives repo's manifest
+          # refresh, unlike editing default.xml). Live branches skip this entirely,
+          # so devices on a current branch are unaffected.
+          COMMON_URL="https://android.googlesource.com/kernel/common"
+          if ! git ls-remote --exit-code --heads "$COMMON_URL" "refs/heads/${KERNEL_BRANCH}" >/dev/null 2>&1 \
+             && git ls-remote --exit-code --heads "$COMMON_URL" "refs/heads/deprecated/${KERNEL_BRANCH}" >/dev/null 2>&1; then
+            echo "⚠️ kernel/common '${KERNEL_BRANCH}' retired upstream — redirecting to 'deprecated/${KERNEL_BRANCH}'"
+            mkdir -p .repo/local_manifests
+            {
+              echo '<?xml version="1.0" encoding="UTF-8"?>'
+              echo '<manifest>'
+              echo "  <extend-project name=\"kernel/common\" revision=\"deprecated/${KERNEL_BRANCH}\" />"
+              echo '</manifest>'
+            } > .repo/local_manifests/deprecated-redirect.xml
+            echo "📄 Wrote .repo/local_manifests/deprecated-redirect.xml:"
+            cat .repo/local_manifests/deprecated-redirect.xml
+          else
+            rm -f .repo/local_manifests/deprecated-redirect.xml 2>/dev/null || true
+          fi
+          # -------------------------------------------------------------------
+
           SYNC_JOBS="$(nproc)"
           [ "$SYNC_JOBS" -gt 8 ] && SYNC_JOBS=8
 
