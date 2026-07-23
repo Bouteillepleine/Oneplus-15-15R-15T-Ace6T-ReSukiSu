@@ -80,6 +80,12 @@ on:
         required: true
         default: true
 
+      ADIOS:
+        type: boolean
+        description: "💾 Add ADIOS block MQ I/O scheduler (and make it the default)"
+        required: false
+        default: false
+
       UNICODE_BYPASS:
         type: boolean
         description: "🔤 Apply Unicode invisible-codepoint bypass patch"
@@ -186,6 +192,7 @@ jobs:
       NETFILTER_ENABLED: ${{ inputs.NETFILTER && '1' || '0' }}
       BBR_ECN_ENABLED: ${{ inputs.BBR_ECN && '1' || '0' }}
       BBR3_ENABLED: ${{ inputs.BBR3 && '1' || '0' }}
+      ADIOS_ENABLED: ${{ inputs.ADIOS && '1' || '0' }}
       UNICODE_BYPASS_ENABLED: ${{ inputs.UNICODE_BYPASS && '1' || '0' }}
       XUS_FIX_ENABLED: ${{ inputs.XUS_FIX && '1' || '0' }}
       SUSFS_DEV_ENABLED: ${{ inputs.SUSFS_DEV && '1' || '0' }}
@@ -328,6 +335,7 @@ jobs:
           | Netfilter | \`${{ inputs.NETFILTER }}\` |
           | BBR + ECN | \`${{ inputs.BBR_ECN }}\` |
           | BBRv3 | \`${{ inputs.BBR3 }}\` |
+          | ADIOS I/O sched | \`${{ inputs.ADIOS }}\` |
           | Unicode bypass | \`${{ inputs.UNICODE_BYPASS }}\` |
           | Release | ${RELEASE_TEXT} |
           EOF
@@ -945,6 +953,58 @@ jobs:
           echo "DURATION_BBR3=$(($(date +%s) - STEP_START))s" >> "$GITHUB_ENV"
           echo "✅ BBRv3 applied from Bouteillepleine/kernel_patches"
 
+      - name: Add ADIOS I/O Scheduler
+        if: ${{ inputs.ADIOS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STEP_START=$(date +%s)
+
+          # Same patch source as BBRv3; clone only if that step did not already.
+          PATCHES_SRC="${GITHUB_WORKSPACE}/kernel_workspace/bouton_kernel_patches"
+          [ -d "$PATCHES_SRC" ] || \
+            git clone --depth=1 https://github.com/Bouteillepleine/kernel_patches.git "$PATCHES_SRC"
+
+          ADIOS_DIR="${PATCHES_SRC}/experimental"
+          PATCH_FILE="${ADIOS_DIR}/adios_ioscheduler_${KERNEL_VERSION}.patch"
+
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "::error::ADIOS patch not found for kernel ${KERNEL_VERSION}"
+            echo "Expected: $PATCH_FILE"
+            find "$ADIOS_DIR" -maxdepth 1 -type f -iname '*adios*' -print 2>/dev/null | sort || true
+            exit 1
+          fi
+
+          cd "${GITHUB_WORKSPACE}/kernel_workspace/common"
+
+          if [ -f "block/adios.c" ]; then
+            echo "⏭️ ADIOS source already present — skipping patch"
+          else
+            echo "📝 Applying $(basename "$PATCH_FILE")"
+            cp "$PATCH_FILE" ./adios.patch
+
+            patch -p1 --ignore-whitespace -F 3 < adios.patch 2>&1 | tee /tmp/adios_patch.log || \
+              echo "⚠️ ADIOS patch reported an issue — checking for rejects"
+
+            # Fail closed: any reject means the scheduler is not correctly wired in.
+            if find . -name '*.rej' -print -quit | grep -q .; then
+              echo "::error::ADIOS patch failed. Reject files:"
+              find . -name '*.rej' -exec echo "=== {} ===" \; -exec cat {} \;
+              exit 1
+            fi
+
+            rm -f adios.patch
+
+            if [ ! -f "block/adios.c" ]; then
+              echo "::error::ADIOS patch applied but block/adios.c is missing"
+              exit 1
+            fi
+          fi
+
+          echo "DURATION_ADIOS=$(($(date +%s) - STEP_START))s" >> "$GITHUB_ENV"
+          echo "✅ ADIOS I/O scheduler applied"
+
       - name: Add Configuration Settings
         shell: bash
         run: |
@@ -1045,6 +1105,12 @@ jobs:
           append_config "CONFIG_NET_SCH_FQ=y"
           append_config "CONFIG_NET_SCH_FQ_CODEL=y"
           append_config "CONFIG_NET_SCH_CAKE=y"
+
+          if [ "${ADIOS_ENABLED}" = "1" ]; then
+            echo "# === Block MQ I/O scheduler (ADIOS) ===" >> "$CONFIG_FILE"
+            force_config "CONFIG_MQ_IOSCHED_ADIOS=y"
+            force_config "CONFIG_MQ_IOSCHED_DEFAULT_ADIOS=y"
+          fi
 
           if [[ "$CPU" == sm* && "${NETFILTER_ENABLED}" = "1" ]]; then
             echo "# === Netfilter / IPSet ===" >> "$CONFIG_FILE"
@@ -1488,6 +1554,7 @@ jobs:
             ### Features
             - BBR + ECN: `${{ inputs.BBR_ECN }}`
             - BBRv3: `${{ inputs.BBR3 }}`
+            - ADIOS I/O scheduler: `${{ inputs.ADIOS }}`
             - Netfilter / IPSet: `${{ inputs.NETFILTER }}`
             - Baseband Guard: `${{ inputs.LSM }}`
             - Unicode Bypass: `${{ inputs.UNICODE_BYPASS }}`
@@ -1672,6 +1739,7 @@ jobs:
           | Sync GKI sources | ${DURATION_SYNC_GKI:-N/A} |
           | Apply patches | ${DURATION_PATCHES:-N/A} |
           | Apply BBRv3 | ${DURATION_BBR3:-skipped} |
+          | Apply ADIOS | ${DURATION_ADIOS:-skipped} |
           | Configure kernel | ${DURATION_CONFIGURE:-N/A} |
           | Build kernel | ${DURATION_BUILD_KERNEL:-N/A} |
           | Package ZIP | ${DURATION_PACKAGE_ZIP:-N/A} |

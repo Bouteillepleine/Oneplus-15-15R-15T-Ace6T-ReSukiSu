@@ -34,6 +34,7 @@ It syncs Android GKI sources, adds **ReSukiSU**, optionally applies **SUSFS**, a
 - Optional BBR + ECN
 - Optional BBRv3 backport (KMI-safe on android16-6.12)
 - Net schedulers built in: `fq`, `fq_codel`, `cake`
+- Optional ADIOS block MQ I/O scheduler
 - Optional Unicode bypass patch
 - Flashable AnyKernel3 ZIP
 - GitHub Release or artifact output
@@ -62,6 +63,7 @@ It syncs Android GKI sources, adds **ReSukiSU**, optionally applies **SUSFS**, a
 | `NETFILTER` | Enable Netfilter/IPSet |
 | `BBR_ECN` | Enable BBR + ECN |
 | `BBR3` | Backport BBRv3 (patches `net/tcp`, adds `CONFIG_TCP_CONG_BBR3`) |
+| `ADIOS` | Add the ADIOS block MQ I/O scheduler and make it the default |
 | `CREATE_RELEASE` | Publish ZIP to GitHub Releases |
 
 ---
