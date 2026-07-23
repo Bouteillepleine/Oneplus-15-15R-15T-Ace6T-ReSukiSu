@@ -1298,31 +1298,59 @@ jobs:
         run: |
           set -euo pipefail
 
-          LATEST_RUN_ID=$(curl -sf -H "Authorization: Bearer ${{ github.token }}" \
+          GH_TOKEN="${{ github.token }}"
+
+          # Canonical release asset — always a plain module zip, never double-wrapped.
+          download_release_module() {
+            local url="https://github.com/sidex15/ksu_module_susfs/releases/download/v1.5.2+/ksu_module_susfs_1.5.2+.zip"
+            local out="ksu_module_susfs_1.5.2+_Release.zip"
+            if curl -Lf -o "$out" "$url"; then
+              cp "$out" ./AnyKernel3/
+              echo "✅ Bundled SUSFS module from release: $out"
+              return 0
+            fi
+            return 1
+          }
+
+          LATEST_RUN_ID=$(curl -sf -H "Authorization: Bearer ${GH_TOKEN}" \
             "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs?status=success&per_page=10" | \
             jq -r '.workflow_runs[] | select(.head_branch == "v1.5.2+") | .id' | head -n 1)
 
-          if [ -z "$LATEST_RUN_ID" ]; then
-            RELEASE_URL="https://github.com/sidex15/ksu_module_susfs/releases/download/v1.5.2+/ksu_module_susfs_1.5.2+.zip"
-            MODULE_ZIP="ksu_module_susfs_1.5.2+_Release.zip"
-
-            if curl -Lf -o "$MODULE_ZIP" "$RELEASE_URL"; then
-              cp "$MODULE_ZIP" ./AnyKernel3/
-            fi
-
+          if [ -z "$LATEST_RUN_ID" ] || [ "$LATEST_RUN_ID" = "null" ]; then
+            echo "ℹ️ No matching CI run — using release asset"
+            download_release_module || echo "⚠️ Could not fetch SUSFS module (release)"
             exit 0
           fi
 
-          ARTIFACT_URL=$(curl -sf -H "Authorization: Bearer ${{ github.token }}" \
+          # Select the artifact whose name looks like the SUSFS module (not [0],
+          # which is order-dependent) and use its real archive_download_url.
+          ARTIFACT_URL=$(curl -sf -H "Authorization: Bearer ${GH_TOKEN}" \
             "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs/$LATEST_RUN_ID/artifacts" | \
-            jq -r '.artifacts[0].archive_download_url')
+            jq -r '[.artifacts[] | select(.name | test("susfs"; "i"))][0].archive_download_url // (.artifacts[0].archive_download_url // empty)')
 
-          if [ -n "$ARTIFACT_URL" ] && [ "$ARTIFACT_URL" != "null" ]; then
-            MODULE_ZIP="ksu_module_susfs_1.5.2+_CI.zip"
-            if curl -Lf -H "Authorization: Bearer ${{ github.token }}" -o "$MODULE_ZIP"; then
-              cp "$MODULE_ZIP" ./AnyKernel3/
-            fi
+          if [ -z "$ARTIFACT_URL" ] || [ "$ARTIFACT_URL" = "null" ]; then
+            echo "ℹ️ No downloadable CI artifact — using release asset"
+            download_release_module || echo "⚠️ Could not fetch SUSFS module (release)"
+            exit 0
           fi
+
+          # A GitHub artifact download is a zip that WRAPS the real module zip, so
+          # fetch the wrapper (note the previously-missing "$ARTIFACT_URL") then
+          # extract the inner ksu_module_susfs*.zip.
+          if curl -Lf -H "Authorization: Bearer ${GH_TOKEN}" -o artifact_wrapper.zip "$ARTIFACT_URL"; then
+            mkdir -p _susfs_module
+            if unzip -o artifact_wrapper.zip -d _susfs_module >/dev/null 2>&1; then
+              INNER_ZIP=$(find _susfs_module -name 'ksu_module_susfs*.zip' -type f | head -n 1)
+              if [ -n "$INNER_ZIP" ]; then
+                cp "$INNER_ZIP" ./AnyKernel3/
+                echo "✅ Bundled SUSFS module from CI artifact: $(basename "$INNER_ZIP")"
+                exit 0
+              fi
+            fi
+            echo "⚠️ CI artifact had no ksu_module_susfs*.zip — using release asset"
+          fi
+
+          download_release_module || echo "⚠️ Could not fetch SUSFS module (release)"
 
       - name: Set ZIP Suffix
         id: suffix
