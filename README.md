@@ -69,7 +69,7 @@ SUSFS disabled:
 `AK3_ReSukiSU_43000_noSUSFS_OnePlus15_6.12.0.zip`
 
 > Building `DEVICE=all` compiles each **unique** kernel once — OnePlus 15 and 15T
-> share `sm8850`/`android16-6.12-2025-08`, while 15R and Ace 6T share
+> share `sm8850`/`android16-6.12-2025-06`, while 15R and Ace 6T share
 > `sm8845`/`android16-6.12-2025-09` — so you get two ZIPs (`OnePlus15-15T`,
 > `OnePlus15R-Ace6T`), each flashable on both of its devices.
 
