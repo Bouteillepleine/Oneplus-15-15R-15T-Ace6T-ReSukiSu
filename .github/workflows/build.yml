@@ -72,6 +72,12 @@ on:
         required: true
         default: true
 
+      BBR3:
+        type: boolean
+        description: "🚀 Backport BBRv3 (patches net/tcp — KMI-safe build for android16-6.12)"
+        required: false
+        default: false
+
       UNICODE_BYPASS:
         type: boolean
         description: "🔤 Apply Unicode invisible-codepoint bypass patch"
@@ -171,6 +177,7 @@ jobs:
       LSM_ENABLED: ${{ inputs.LSM && '1' || '0' }}
       NETFILTER_ENABLED: ${{ inputs.NETFILTER && '1' || '0' }}
       BBR_ECN_ENABLED: ${{ inputs.BBR_ECN && '1' || '0' }}
+      BBR3_ENABLED: ${{ inputs.BBR3 && '1' || '0' }}
       UNICODE_BYPASS_ENABLED: ${{ inputs.UNICODE_BYPASS && '1' || '0' }}
       XUS_FIX_ENABLED: ${{ inputs.XUS_FIX && '1' || '0' }}
       SUSFS_DEV_ENABLED: ${{ inputs.SUSFS_DEV && '1' || '0' }}
@@ -312,6 +319,7 @@ jobs:
           | LSM | \`${{ inputs.LSM }}\` |
           | Netfilter | \`${{ inputs.NETFILTER }}\` |
           | BBR + ECN | \`${{ inputs.BBR_ECN }}\` |
+          | BBRv3 | \`${{ inputs.BBR3 }}\` |
           | Unicode bypass | \`${{ inputs.UNICODE_BYPASS }}\` |
           | Release | ${RELEASE_TEXT} |
           EOF
@@ -856,6 +864,79 @@ jobs:
 
           echo "CONFIG_BBG=y" >> arch/arm64/configs/gki_defconfig
 
+      - name: Apply BBRv3
+        if: ${{ inputs.BBR3 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STEP_START=$(date +%s)
+
+          # Patches come from Bouteillepleine/kernel_patches. For android16-6.12 the
+          # 0001 patch there is the KMI-safe revision: a naive BBRv3 backport grows
+          # KMI-reachable types (enum tcp_ca_event, struct rate_sample) which STG ABI
+          # checking rejects, so the kernel compiles but vendor modules refuse to load
+          # and the device does not boot. Do not swap in an upstream/unpatched BBRv3.
+          PATCHES_SRC="${GITHUB_WORKSPACE}/kernel_workspace/bouton_kernel_patches"
+          [ -d "$PATCHES_SRC" ] || \
+            git clone --depth=1 https://github.com/Bouteillepleine/kernel_patches.git "$PATCHES_SRC"
+
+          BBR3_DIR="${PATCHES_SRC}/common/bbrv3"
+          if [ ! -d "$BBR3_DIR" ]; then
+            echo "::error::BBRv3 patch directory not found: $BBR3_DIR"
+            exit 1
+          fi
+
+          cd "${GITHUB_WORKSPACE}/kernel_workspace/common"
+
+          MAIN_PATCH="${BBR3_DIR}/0001-net-tcp-backport-BBRv3-to-${KANDROID_VERSION}-${KERNEL_VERSION}.patch"
+          DEBUGFS_PATCH="${BBR3_DIR}/0002-net-tcp-bbr3-add-debugfs-diagnostics-and-runtime-tunables.patch"
+
+          if [ ! -f "$MAIN_PATCH" ]; then
+            echo "::error::BBRv3 patch not found for ${KANDROID_VERSION}-${KERNEL_VERSION}"
+            echo "Expected: $MAIN_PATCH"
+            echo "Available:"
+            find "$BBR3_DIR" -maxdepth 1 -type f -name '*.patch' -print | sort
+            exit 1
+          fi
+
+          echo "📝 Applying $(basename "$MAIN_PATCH")"
+          patch -p1 < "$MAIN_PATCH"
+
+          # 6.12 additionally gets debugfs diagnostics + runtime tunables.
+          if [ "$KANDROID_VERSION" = "android16" ] && [ "$KERNEL_VERSION" = "6.12" ]; then
+            if [ ! -f "$DEBUGFS_PATCH" ]; then
+              echo "::error::Required BBRv3 debugfs/tunables patch missing: $DEBUGFS_PATCH"
+              exit 1
+            fi
+            echo "📝 Applying $(basename "$DEBUGFS_PATCH")"
+            patch -p1 < "$DEBUGFS_PATCH"
+          else
+            echo "⏭️ Skipping debugfs/tunables patch for ${KANDROID_VERSION}-${KERNEL_VERSION}"
+          fi
+
+          # The backport calls proc_dou8vec_minmax() in sysctl_net_ipv4.c without ever
+          # declaring it (that helper only landed upstream in 5.12). Supply it only
+          # when genuinely absent — 6.12 already has it, and blind patching would fail
+          # as already-applied. Fail here rather than 20 min later in a compile error.
+          if ! grep -qF 'int proc_dou8vec_minmax(' ./include/linux/sysctl.h; then
+            echo "proc_dou8vec_minmax() missing — applying sysctl backports"
+            for p in sysctl_add_proc_dou8vec_minmax.patch \
+                     sysctl_fix_data-races_in_proc_dou8vec_minmax.patch; do
+              if [ ! -f "$BBR3_DIR/$p" ]; then
+                echo "::error::BBRv3 needs $p but it is missing from $BBR3_DIR"
+                exit 1
+              fi
+              echo "📝 Applying $p"
+              patch -p1 < "$BBR3_DIR/$p"
+            done
+          else
+            echo "✅ proc_dou8vec_minmax() already present — skipping sysctl backports"
+          fi
+
+          echo "DURATION_BBR3=$(($(date +%s) - STEP_START))s" >> "$GITHUB_ENV"
+          echo "✅ BBRv3 applied from Bouteillepleine/kernel_patches"
+
       - name: Add Configuration Settings
         shell: bash
         run: |
@@ -943,6 +1024,19 @@ jobs:
             # not here. Only the netfilter ECN target below is a real build option.
             append_config "CONFIG_IP_NF_TARGET_ECN=y"
           fi
+
+          if [ "${BBR3_ENABLED}" = "1" ]; then
+            echo "# === BBRv3 ===" >> "$CONFIG_FILE"
+            append_config "CONFIG_TCP_CONG_ADVANCED=y"
+            append_config "CONFIG_TCP_CONG_BBR3=y"
+          fi
+
+          # Net schedulers: fq is what actually offloads BBR/BBRv3 pacing, so keep
+          # it available regardless of which congestion control was selected.
+          echo "# === Net schedulers (qdisc) ===" >> "$CONFIG_FILE"
+          append_config "CONFIG_NET_SCH_FQ=y"
+          append_config "CONFIG_NET_SCH_FQ_CODEL=y"
+          append_config "CONFIG_NET_SCH_CAKE=y"
 
           if [[ "$CPU" == sm* && "${NETFILTER_ENABLED}" = "1" ]]; then
             echo "# === Netfilter / IPSet ===" >> "$CONFIG_FILE"
@@ -1047,7 +1141,7 @@ jobs:
           CONFIG_FILE="./arch/arm64/configs/gki_defconfig"
 
           echo "🔎 Important defconfig entries:"
-          grep -nE 'CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=|CONFIG_KPM=|CONFIG_TCP_CONG_BBR=|CONFIG_IP_SET=|CONFIG_DEBUG_KERNEL=' "$CONFIG_FILE" || true
+          grep -nE 'CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=|CONFIG_KPM=|CONFIG_TCP_CONG_BBR=|CONFIG_TCP_CONG_BBR3=|CONFIG_NET_SCH_FQ=|CONFIG_IP_SET=|CONFIG_DEBUG_KERNEL=' "$CONFIG_FILE" || true
 
           if grep -q '^CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y' "$CONFIG_FILE"; then
             echo "❌ ERROR: CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS is enabled"
@@ -1113,7 +1207,7 @@ jobs:
           GENERATED_CONFIG="$(find out -name ".config" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2- || true)"
 
           if [ -n "$GENERATED_CONFIG" ] && [ -f "$GENERATED_CONFIG" ]; then
-            grep -nE 'CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS|CONFIG_KPM=|CONFIG_TCP_CONG_BBR=|CONFIG_IP_SET=|CONFIG_DEBUG_KERNEL|CONFIG_KSU_FULL_NAME_FORMAT' "$GENERATED_CONFIG" || true
+            grep -nE 'CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS|CONFIG_KPM=|CONFIG_TCP_CONG_BBR=|CONFIG_TCP_CONG_BBR3=|CONFIG_NET_SCH_FQ=|CONFIG_IP_SET=|CONFIG_DEBUG_KERNEL|CONFIG_KSU_FULL_NAME_FORMAT' "$GENERATED_CONFIG" || true
 
             if ! grep -q '^CONFIG_KSU=y' "$GENERATED_CONFIG"; then
               echo "❌ ERROR: CONFIG_KSU=y missing in generated .config"
@@ -1385,6 +1479,7 @@ jobs:
             | Build run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
             ### Features
             - BBR + ECN: `${{ inputs.BBR_ECN }}`
+            - BBRv3: `${{ inputs.BBR3 }}`
             - Netfilter / IPSet: `${{ inputs.NETFILTER }}`
             - Baseband Guard: `${{ inputs.LSM }}`
             - Unicode Bypass: `${{ inputs.UNICODE_BYPASS }}`
@@ -1568,6 +1663,7 @@ jobs:
           | Environment setup | ${DURATION_ENV_SETUP:-N/A} |
           | Sync GKI sources | ${DURATION_SYNC_GKI:-N/A} |
           | Apply patches | ${DURATION_PATCHES:-N/A} |
+          | Apply BBRv3 | ${DURATION_BBR3:-skipped} |
           | Configure kernel | ${DURATION_CONFIGURE:-N/A} |
           | Build kernel | ${DURATION_BUILD_KERNEL:-N/A} |
           | Package ZIP | ${DURATION_PACKAGE_ZIP:-N/A} |
@@ -1599,6 +1695,7 @@ jobs:
               kernel_workspace/susfs4ksu \
               kernel_workspace/SukiSU_patch \
               kernel_workspace/Action-Build \
+              kernel_workspace/bouton_kernel_patches \
               /tmp/ksu_setup.sh \
               /tmp/bbg_setup.sh \
               /tmp/* \
