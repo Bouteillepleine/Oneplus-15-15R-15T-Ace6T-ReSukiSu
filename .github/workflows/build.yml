@@ -15,15 +15,6 @@ on:
           - oneplus15r
           - ace6t
 
-      MANAGER_SOURCE:
-        type: choice
-        description: "🔧 Manager variant"
-        required: true
-        default: MD3
-        options:
-          - MD3
-          - MD3_SPOOF
-
       KSU_SETUP_BRANCH:
         type: choice
         description: "🌿 ReSukiSU setup.sh branch"
@@ -116,7 +107,7 @@ permissions:
   actions: write
 
 concurrency:
-  group: resukisu-${{ github.ref }}-${{ github.run_id }}
+  group: resukisu-${{ github.ref }}-${{ inputs.DEVICE }}
   cancel-in-progress: true
 
 jobs:
@@ -134,7 +125,10 @@ jobs:
           set -euo pipefail
 
           if [ "${{ inputs.DEVICE }}" = "all" ]; then
-            MATRIX='{"include":[{"id":"oneplus15","name":"OnePlus 15","codename":"Infinity","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15"},{"id":"oneplus15t","name":"OnePlus 15T","codename":"Infinity","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15T"},{"id":"oneplus15r","name":"OnePlus 15R","codename":"Infinity","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"OnePlus15R"},{"id":"ace6t","name":"OnePlus Ace 6T","codename":"Infinity","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"Ace6T"}]}'
+            # OnePlus 15 == 15T (sm8850, same GKI branch/config) and 15R == Ace 6T
+            # (sm8845) produce byte-identical Images, so we build each unique kernel
+            # once and label the ZIP for both devices instead of compiling twice.
+            MATRIX='{"include":[{"id":"oneplus15","name":"OnePlus 15 / 15T","codename":"Infinity","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15-15T"},{"id":"oneplus15r","name":"OnePlus 15R / Ace 6T","codename":"Infinity","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"OnePlus15R-Ace6T"}]}'
           else
             case "${{ inputs.DEVICE }}" in
               oneplus15)
@@ -181,6 +175,14 @@ jobs:
       XUS_FIX_ENABLED: ${{ inputs.XUS_FIX && '1' || '0' }}
       SUSFS_DEV_ENABLED: ${{ inputs.SUSFS_DEV && '1' || '0' }}
       SPACE_NOCLEAN_ENABLED: ${{ inputs.SPACE_NOCLEAN && '1' || '0' }}
+      # Free-form string inputs surfaced as env vars so shell steps reference
+      # them as "$VAR" instead of splicing ${{ inputs.* }} into the script body
+      # (prevents shell injection via a crafted dispatch input).
+      SUSFS_META: ${{ inputs.SUSFS_META }}
+      KSU_META: ${{ inputs.KSU_META }}
+      BUILD_TIME: ${{ inputs.BUILD_TIME }}
+      SUFFIX: ${{ inputs.SUFFIX }}
+      SUBLEVEL: ${{ inputs.SUBLEVEL }}
 
     steps:
       - name: Checkout
@@ -227,7 +229,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          KSU_META="${{ inputs.KSU_META }}"
+          KSU_META="${KSU_META}"
           if [[ ! "$KSU_META" =~ ^[^/]+/[^/]*/[^/]*$ ]]; then
             echo "❌ ERROR: KSU_META format invalid"
             echo "Expected: branch/CustomTag/OptionalHash"
@@ -235,14 +237,14 @@ jobs:
             exit 1
           fi
 
-          SUSFS_META="${{ inputs.SUSFS_META }}"
+          SUSFS_META="${SUSFS_META}"
           if [[ -n "$SUSFS_META" && "$SUSFS_META" != "-1" ]]; then
             if [[ ! "$SUSFS_META" =~ ^([a-fA-F0-9]{7,40}|[0-9]+)$ ]]; then
               echo "⚠️ WARNING: SUSFS_META does not look like a Git hash or HEAD~N number: '$SUSFS_META'"
             fi
           fi
 
-          BUILD_TIME="${{ inputs.BUILD_TIME }}"
+          BUILD_TIME="${BUILD_TIME}"
           if [[ -n "$BUILD_TIME" && "$BUILD_TIME" != "F" && "$BUILD_TIME" != "f" ]]; then
             date -d "$BUILD_TIME" >/dev/null 2>&1 || {
               echo "❌ ERROR: Invalid BUILD_TIME format: '$BUILD_TIME'"
@@ -250,7 +252,7 @@ jobs:
             }
           fi
 
-          SUBLEVEL="${{ inputs.SUBLEVEL }}"
+          SUBLEVEL="${SUBLEVEL}"
           if [[ -n "$SUBLEVEL" && ! "$SUBLEVEL" =~ ^[0-9]+$ ]]; then
             echo "❌ ERROR: SUBLEVEL must be numeric, got: '$SUBLEVEL'"
             exit 1
@@ -263,29 +265,29 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "${{ inputs.SUSFS_META }}" = "-1" ]; then
+          if [ "${SUSFS_META}" = "-1" ]; then
             SUSFS_STATUS="❌ Disabled"
             SUSFS_VERSION_TEXT="N/A"
-          elif [ -z "${{ inputs.SUSFS_META }}" ]; then
+          elif [ -z "${SUSFS_META}" ]; then
             SUSFS_STATUS="✅ Enabled"
             SUSFS_VERSION_TEXT="Latest upstream — exact version detected after SUSFS clone"
           else
             SUSFS_STATUS="✅ Enabled pinned"
-            SUSFS_VERSION_TEXT="${{ inputs.SUSFS_META }}"
+            SUSFS_VERSION_TEXT="${SUSFS_META}"
           fi
 
-          if [ "${{ inputs.SUFFIX }}" = "-1" ]; then
+          if [ "${SUFFIX}" = "-1" ]; then
             SUFFIX_TEXT="Disabled"
-          elif [ -z "${{ inputs.SUFFIX }}" ]; then
+          elif [ -z "${SUFFIX}" ]; then
             SUFFIX_TEXT="Random"
           else
-            SUFFIX_TEXT="${{ inputs.SUFFIX }}"
+            SUFFIX_TEXT="${SUFFIX}"
           fi
 
-          if [ "${{ inputs.BUILD_TIME }}" = "F" ] || [ "${{ inputs.BUILD_TIME }}" = "f" ] || [ -z "${{ inputs.BUILD_TIME }}" ]; then
+          if [ "${BUILD_TIME}" = "F" ] || [ "${BUILD_TIME}" = "f" ] || [ -z "${BUILD_TIME}" ]; then
             BUILD_TIME_TEXT="Current UTC time"
           else
-            BUILD_TIME_TEXT="${{ inputs.BUILD_TIME }}"
+            BUILD_TIME_TEXT="${BUILD_TIME}"
           fi
 
           RELEASE_TEXT="${{ inputs.CREATE_RELEASE == true && 'Yes — GitHub Release will be created' || 'No — artifact only' }}"
@@ -301,8 +303,7 @@ jobs:
           | Codename | \`${DEVICE_CODENAME}\` |
           | SoC | \`${CPU}\` |
           | Branch | \`common-${KERNEL_BRANCH}\` |
-          | Manager | \`${{ inputs.MANAGER_SOURCE }}\` |
-          | KSU_META | \`${{ inputs.KSU_META }}\` |
+          | KSU_META | \`${KSU_META}\` |
           | SUSFS | ${SUSFS_STATUS} |
           | SUSFS requested version / rollback | \`${SUSFS_VERSION_TEXT}\` |
           | SUSFS dev | \`${{ inputs.SUSFS_DEV }}\` |
@@ -523,7 +524,7 @@ jobs:
           echo "KANDROID_VERSION=${KANDROID_VERSION}" >> "$GITHUB_ENV"
           echo "KERNEL_VERSION=${KERNEL_VERSION}" >> "$GITHUB_ENV"
 
-          SUBLEVEL_INPUT="${{ inputs.SUBLEVEL }}"
+          SUBLEVEL_INPUT="${SUBLEVEL}"
           if [ -n "$SUBLEVEL_INPUT" ]; then
             sed -i "s/^\(SUBLEVEL[[:space:]]*=[[:space:]]*\).*/\1$SUBLEVEL_INPUT/" ./common/Makefile
           fi
@@ -545,7 +546,7 @@ jobs:
           cd kernel_workspace
 
           KANDROID_VERSION="${KANDROID_VERSION:-android16}"
-          INPUT_SUFFIX="${{ inputs.SUFFIX }}"
+          INPUT_SUFFIX="${SUFFIX}"
 
           if [ "$INPUT_SUFFIX" = "-1" ]; then
             echo "⏭️ Kernel suffix disabled"
@@ -582,23 +583,6 @@ jobs:
           apply_suffix "msm-kernel/scripts/setlocalversion"
           apply_suffix "external/dtc/scripts/setlocalversion"
 
-      - name: Resolve Manager Source
-        id: manager
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          case "${{ inputs.MANAGER_SOURCE }}" in
-            MD3_SPOOF)
-              echo "manager_branch=main" >> "$GITHUB_OUTPUT"
-              echo "manager_artifact=Spoofed-Manager-release" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "manager_branch=main" >> "$GITHUB_OUTPUT"
-              echo "manager_artifact=Manager-release" >> "$GITHUB_OUTPUT"
-              ;;
-          esac
-
       - name: Add ReSukiSU
         shell: bash
         run: |
@@ -606,7 +590,7 @@ jobs:
 
           cd kernel_workspace
 
-          KSU_META="${{ inputs.KSU_META }}"
+          KSU_META="${KSU_META}"
           IFS='/' read -r BRANCH_NAME KSU_CUSTOM_TAG MANUAL_HASH <<< "$KSU_META"
 
           SETUP_BRANCH="${{ inputs.KSU_SETUP_BRANCH }}"
@@ -651,14 +635,14 @@ jobs:
           [ -d "SukiSU_patch" ] || git clone --depth=1 https://github.com/ShirkNeko/SukiSU_patch.git
           [ -d "Action-Build" ] || git clone --depth=1 -b SukiSU-Ultra https://github.com/Numbersf/Action-Build.git
 
-          if [ "${{ inputs.SUSFS_META }}" != "-1" ]; then
+          if [ "${SUSFS_META}" != "-1" ]; then
             BR="gki-${KANDROID_VERSION}-${KERNEL_VERSION}$( [ "${{ inputs.SUSFS_DEV }}" = "true" ] && echo "-dev" || true )"
 
             git clone https://gitlab.com/simonpunk/susfs4ksu.git -b "$BR" susfs4ksu
 
             cd susfs4ksu
 
-            SUSFS_META="${{ inputs.SUSFS_META }}"
+            SUSFS_META="${SUSFS_META}"
             if [ -n "$SUSFS_META" ]; then
               if [[ "$SUSFS_META" =~ ^[0-9]+$ ]]; then
                 git checkout HEAD~"$SUSFS_META"
@@ -774,7 +758,7 @@ jobs:
             fi
           }
 
-          if [ "${{ inputs.SUSFS_META }}" != "-1" ]; then
+          if [ "${SUSFS_META}" != "-1" ]; then
             apply_patch_safe "50_add_susfs_in_gki-${KANDROID_VERSION}-${KERNEL_VERSION}.patch" "SUSFS Integration" || true
             fix_op15_recovery_bootloop_sus_mount
 
@@ -854,7 +838,7 @@ jobs:
           cd kernel_workspace/common
 
           CONFIG_FILE=./arch/arm64/configs/gki_defconfig
-          MANAGER_BRANCH="${{ steps.manager.outputs.manager_branch }}"
+          MANAGER_BRANCH="main"
 
           append_config() {
             local entry="$1"
@@ -883,7 +867,7 @@ jobs:
 
           force_config "CONFIG_KPM=n"
 
-          if [ "${{ inputs.SUSFS_META }}" != "-1" ]; then
+          if [ "${SUSFS_META}" != "-1" ]; then
             echo "# === SUSFS ===" >> "$CONFIG_FILE"
             append_config "CONFIG_KSU_SUSFS=y"
             append_config "CONFIG_KSU_SUSFS_SUS_PATH=y"
@@ -927,9 +911,10 @@ jobs:
             force_config "CONFIG_TCP_CONG_BIC=n"
             force_config "CONFIG_TCP_CONG_WESTWOOD=n"
             force_config "CONFIG_TCP_CONG_HTCP=n"
-            append_config "CONFIG_IP_ECN=y"
-            append_config "CONFIG_TCP_ECN=y"
-            append_config "CONFIG_IPV6_ECN=y"
+            # NOTE: CONFIG_IP_ECN / CONFIG_TCP_ECN / CONFIG_IPV6_ECN are NOT real
+            # kernel Kconfig symbols — savedefconfig silently drops them. ECN is a
+            # runtime sysctl (net.ipv4.tcp_ecn), so enable it from the module/init,
+            # not here. Only the netfilter ECN target below is a real build option.
             append_config "CONFIG_IP_NF_TARGET_ECN=y"
           fi
 
@@ -985,7 +970,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          INPUT_TIME="${{ inputs.BUILD_TIME }}"
+          INPUT_TIME="${BUILD_TIME}"
 
           if [[ -z "$INPUT_TIME" || "$INPUT_TIME" == "F" || "$INPUT_TIME" == "f" ]]; then
             DATESTR="$(TZ='UTC' date +'%a %b %d %T %Z %Y')"
@@ -1109,7 +1094,7 @@ jobs:
               exit 1
             fi
 
-            if [ "${{ inputs.SUSFS_META }}" != "-1" ]; then
+            if [ "${SUSFS_META}" != "-1" ]; then
               if ! grep -q '^CONFIG_KSU_SUSFS=y' "$GENERATED_CONFIG"; then
                 echo "❌ ERROR: CONFIG_KSU_SUSFS=y missing in generated .config"
                 exit 1
@@ -1329,7 +1314,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "${{ inputs.SUSFS_META }}" = "-1" ]; then
+          if [ "${SUSFS_META}" = "-1" ]; then
             SUSFS_ZIP_PART="noSUSFS"
           else
             SUSFS_ZIP_PART="SUSFS-${SUSVER:-unknown}"
@@ -1340,7 +1325,7 @@ jobs:
           echo "📦 Creating: $ZIP_NAME"
 
           SUSFS_MODULE_PRESENT=false
-          if [ "${{ inputs.SUSFS_META }}" != "-1" ]; then
+          if [ "${SUSFS_META}" != "-1" ]; then
             if ls AnyKernel3/ksu_module_susfs*.zip 1>/dev/null 2>&1; then
               SUSFS_MODULE_PRESENT=true
             fi
@@ -1548,7 +1533,7 @@ jobs:
           | Property | Value |
           |----------|-------|
           | setup.sh branch | \`${{ inputs.KSU_SETUP_BRANCH }}\` |
-          | KSU_META | \`${{ inputs.KSU_META }}\` |
+          | KSU_META | \`${KSU_META}\` |
           | KSU Version | \`${KSUVER}\` |
           | KSU Commit | \`${KSU_COMMIT_SHA}\` |
 

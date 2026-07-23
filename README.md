@@ -48,7 +48,6 @@ It syncs Android GKI sources, adds **ReSukiSU**, optionally applies **SUSFS**, a
 | `DEVICE` | Device to build, or `all` |
 | `KSU_META` | ReSukiSU source: `branch/tag/commit` |
 | `SUSFS_META` | Empty = latest, `-1` = disabled, hash = pinned |
-| `MANAGER_SOURCE` | `MD3` or `MD3_SPOOF` |
 | `LSM` | Enable Baseband Guard | 
 | `NETFILTER` | Enable Netfilter/IPSet |
 | `BBR_ECN` | Enable BBR + ECN |
@@ -58,11 +57,21 @@ It syncs Android GKI sources, adds **ReSukiSU**, optionally applies **SUSFS**, a
 
 ## 📦 Output
 
+Naming: `AK3_ReSukiSU_<ksuver>_<SUSFS-ver|noSUSFS>_<device>_<kernel>[_LSM].zip`
+
 Example ZIP:
-`AK3_ReSukiSU_43000_OnePlus15_6.12.0.zip`
+`AK3_ReSukiSU_43000_SUSFS-1.5.9_OnePlus15_6.12.0.zip`
 
 With LSM:
-`AK3_ReSukiSU_43000_OnePlus15_6.12.0_LSM.zip`
+`AK3_ReSukiSU_43000_SUSFS-1.5.9_OnePlus15_6.12.0_LSM.zip`
+
+SUSFS disabled:
+`AK3_ReSukiSU_43000_noSUSFS_OnePlus15_6.12.0.zip`
+
+> Building `DEVICE=all` compiles each **unique** kernel once — OnePlus 15 and 15T
+> share `sm8850`/`android16-6.12-2025-06`, while 15R and Ace 6T share
+> `sm8845`/`android16-6.12-2025-09` — so you get two ZIPs (`OnePlus15-15T`,
+> `OnePlus15R-Ace6T`), each flashable on both of its devices.
 
 ---
 
