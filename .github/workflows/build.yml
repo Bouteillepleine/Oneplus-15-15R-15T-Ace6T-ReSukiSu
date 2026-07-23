@@ -83,8 +83,8 @@ on:
       ADIOS:
         type: boolean
         description: "💾 Add ADIOS block MQ I/O scheduler (and make it the default)"
-        required: false
-        default: false
+        required: true
+        default: true
 
       UNICODE_BYPASS:
         type: boolean
