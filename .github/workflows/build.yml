@@ -77,8 +77,8 @@ on:
       BBR3:
         type: boolean
         description: "🚀 Backport BBRv3 (patches net/tcp — KMI-safe build for android16-6.12)"
-        required: false
-        default: false
+        required: true
+        default: true
 
       UNICODE_BYPASS:
         type: boolean
