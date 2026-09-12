@@ -842,10 +842,52 @@ jobs:
             fi
           }
 
+          fix_susfs_missing_open_redirect_statfs() {
+            local SUSFS_C="./fs/susfs.c"
+            local STATFS_C="./fs/statfs.c"
+
+            [ -f "$SUSFS_C" ] && [ -f "$STATFS_C" ] || return 0
+
+            grep -qF 'susfs_open_redirect_spoof_vfs_statfs' "$STATFS_C" || return 0
+            grep -qE '^[a-zA-Z_].*susfs_open_redirect_spoof_vfs_statfs[[:space:]]*[(].*{[[:space:]]*$' "$SUSFS_C" && return 0
+
+            printf '%s\n' \
+              '' \
+              '#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT' \
+              'int susfs_open_redirect_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf) {' \
+              '    struct st_susfs_open_redirect_hlist *entry = NULL;' \
+              '    int srcu_idx = srcu_read_lock(&susfs_srcu_open_redirect);' \
+              '' \
+              '    hash_for_each_possible_rcu(OPEN_REDIRECT_HLIST, entry, node, inode->i_ino) {' \
+              '        if (entry->reversed_lookup_only &&' \
+              '            entry->target_dev == inode->i_sb->s_dev) {' \
+              '            SUSFS_LOGI("spoof kstatfs for redirected path: %s\n", entry->info.target_pathname);' \
+              '            memcpy(buf, &entry->spoofed_kstatfs, sizeof(struct kstatfs));' \
+              '            srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);' \
+              '            return 0;' \
+              '        }' \
+              '    }' \
+              '    srcu_read_unlock(&susfs_srcu_open_redirect, srcu_idx);' \
+              '    return -EINVAL;' \
+              '}' \
+              '#endif' >> "$SUSFS_C"
+
+            if ! grep -qE '^[a-zA-Z_].*susfs_open_redirect_spoof_vfs_statfs[[:space:]]*[(].*{[[:space:]]*$' "$SUSFS_C"; then
+              echo "::error::Failed to restore susfs_open_redirect_spoof_vfs_statfs() in $SUSFS_C"
+              exit 1
+            fi
+
+            echo "OK Restored susfs_open_redirect_spoof_vfs_statfs() dropped by susfs4ksu 35f819b"
+          }
+
           if [ "${SUSFS_META}" != "-1" ]; then
-            apply_patch_safe "50_add_susfs_in_gki-${KANDROID_VERSION}-${KERNEL_VERSION}.patch" "SUSFS Integration" || true
+            if ! apply_patch_safe "50_add_susfs_in_gki-${KANDROID_VERSION}-${KERNEL_VERSION}.patch" "SUSFS Integration"; then
+              echo "::error::SUSFS integration patch did not apply -- SUSFS ${SUSVER:-unknown} is incompatible with common-${KERNEL_BRANCH}"
+              exit 1
+            fi
             fix_op15_recovery_bootloop_sus_mount
             fix_susfs_getname_flags_arity
+            fix_susfs_missing_open_redirect_statfs
 
             if [ "${{ inputs.XUS_FIX }}" = "true" ]; then
               apply_patch_safe "../../Action-Build/patches/No_5uS.patch" "No_5uS Fix" || true
