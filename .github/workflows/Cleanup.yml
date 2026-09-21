@@ -28,6 +28,7 @@ on:
           - all
           - android16-6.12-2025-06
           - android16-6.12-2025-09
+          - android16-6.12-2025-12
           - oneplus15
           - oneplus15t
           - oneplus15r

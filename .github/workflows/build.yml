@@ -927,6 +927,32 @@ jobs:
           }
 
           if [ "${SUSFS_META}" != "-1" ]; then
+            fix_susfs_exec_include() {
+              local pf="50_add_susfs_in_gki-${KANDROID_VERSION}-${KERNEL_VERSION}.patch"
+              [ -f "$pf" ] && [ -f fs/exec.c ] || return 0
+              if patch -p1 --dry-run < "$pf" >/dev/null 2>&1; then return 0; fi
+              grep -q '^#include <linux/ksm.h>$' fs/exec.c || return 0
+              grep -q 'susfs_def.h' fs/exec.c && return 0
+              cp fs/exec.c /tmp/exec.c.orig
+              awk '
+                /^\+\+\+ /{infile = ($0 ~ /fs\/exec\.c$/)}
+                infile && /^@@ -69,6 \+69,9 @@/ {skip=1; next}
+                skip && /^(@@ |diff --git |--- |\+\+\+ )/ {skip=0}
+                skip {next}
+                {print}
+              ' "$pf" > "${pf}.fixed"
+              sed -i 's|^#include <linux/ksm.h>$|&\n#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif|' fs/exec.c
+              if patch -p1 --dry-run < "${pf}.fixed" >/dev/null 2>&1; then
+                mv "${pf}.fixed" "$pf"
+                echo "🔧 Fixed SUSFS exec.c include hunk for ${KERNEL_BRANCH}"
+              else
+                cp /tmp/exec.c.orig fs/exec.c
+                rm -f "${pf}.fixed"
+                echo "⚠️ exec.c include fix did not help; leaving patch unchanged"
+              fi
+            }
+            fix_susfs_exec_include
+
             if ! apply_patch_safe "50_add_susfs_in_gki-${KANDROID_VERSION}-${KERNEL_VERSION}.patch" "SUSFS Integration"; then
               echo "::error::SUSFS integration patch did not apply -- SUSFS ${SUSVER:-unknown} is incompatible with common-${KERNEL_BRANCH}"
               exit 1
