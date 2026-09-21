@@ -46,9 +46,9 @@ on:
 
       SUFFIX:
         type: string
-        description: "🏷️ Kernel local version suffix: empty = random | -1 = disabled"
+        description: "🏷️ Kernel local version suffix: empty = stock suffix for the selected GKI release | -1 = disabled"
         required: false
-        default: "5-gb2a876903b49-ab14541642-4k"
+        default: ""
 
       SUBLEVEL:
         type: string
@@ -622,9 +622,27 @@ jobs:
           elif [ -n "$INPUT_SUFFIX" ]; then
             SUFFIX="$INPUT_SUFFIX"
           else
-            RANDOM_DIGIT=$(od -An -N1 -tu1 < /dev/urandom | tr -d '[:space:]' | awk '{print $1 % 11}')
-            RANDOM_HASH=$(od -An -N7 -tx1 /dev/urandom | tr -d ' \n')
-            SUFFIX="${RANDOM_DIGIT}-o-g${RANDOM_HASH}"
+            case "${KERNEL_BRANCH:-}" in
+              android16-6.12-2025-06) STOCK_SUFFIX="5-gb2a876903b49-ab14541642-4k" ;;
+              android16-6.12-2025-09) STOCK_SUFFIX="5-g844001fb8721-ab14552068-4k" ;;
+              android16-6.12-2025-12)
+                case "${DEVICE_ID:-}" in
+                  pad4) STOCK_SUFFIX="6-g7704a1ae279b-ab15213644-4k" ;;
+                  *)    STOCK_SUFFIX="6-g925a103d123c-ab15898589-4k" ;;
+                esac
+                ;;
+              *) STOCK_SUFFIX="" ;;
+            esac
+
+            if [ -n "$STOCK_SUFFIX" ]; then
+              SUFFIX="$STOCK_SUFFIX"
+              echo "🧬 Derived stock suffix for common-${KERNEL_BRANCH}: ${SUFFIX}"
+            else
+              RANDOM_DIGIT=$(od -An -N1 -tu1 < /dev/urandom | tr -d '[:space:]' | awk '{print $1 % 11}')
+              RANDOM_HASH=$(od -An -N7 -tx1 /dev/urandom | tr -d ' \n')
+              SUFFIX="${RANDOM_DIGIT}-o-g${RANDOM_HASH}"
+              echo "🎲 No stock suffix known for common-${KERNEL_BRANCH:-?}, using random: ${SUFFIX}"
+            fi
           fi
 
           echo "KERNEL_SUFFIX=${SUFFIX}" >> "$GITHUB_ENV"
