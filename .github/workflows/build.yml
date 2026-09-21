@@ -1792,7 +1792,7 @@ jobs:
         if: ${{ inputs.CREATE_RELEASE == true }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ak3-${{ matrix.id }}-${{ github.run_id }}
+          tag_name: ak3-${{ matrix.id }}-${{ env.TKERNEL_VERSION }}-${{ github.run_id }}
           name: >-
             ${{ env.DEVICE_NAME }} — ReSukiSU ${{ env.KSUVER }} — SUSFS ${{ env.SUSVER }} — ${{ env.TKERNEL_VERSION }}
             ${{ inputs.LSM && '[LSM]' || '' }}
@@ -1927,7 +1927,7 @@ jobs:
           BUILD_SYSTEM_TEXT="${BUILD_SYSTEM_USED:-Unknown}"
 
           if [ "${{ inputs.CREATE_RELEASE }}" = "true" ]; then
-            RELEASE_CELL="[⬇️ Download](https://github.com/${{ github.repository }}/releases/tag/ak3-${{ matrix.id }}-${{ github.run_id }})"
+            RELEASE_CELL="[⬇️ Download](https://github.com/${{ github.repository }}/releases/tag/ak3-${{ matrix.id }}-${{ env.TKERNEL_VERSION }}-${{ github.run_id }})"
           else
             RELEASE_CELL="📎 Artifact only"
           fi
