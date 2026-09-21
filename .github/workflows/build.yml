@@ -97,6 +97,12 @@ on:
         required: true
         default: true
 
+      SULTAN_TWEAKS:
+        type: boolean
+        description: "🍃 Sultan-derived power/memory tweaks (WildKernels patches, dry-run checked)"
+        required: true
+        default: false
+
       UNICODE_BYPASS:
         type: boolean
         description: "🔤 Apply Unicode invisible-codepoint bypass patch"
@@ -1122,6 +1128,38 @@ jobs:
           echo "DURATION_ADIOS=$(($(date +%s) - STEP_START))s" >> "$GITHUB_ENV"
           echo "✅ ADIOS I/O scheduler applied"
 
+      - name: Apply Sultan-derived tweaks
+        if: ${{ inputs.SULTAN_TWEAKS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          STEP_START=$(date +%s)
+
+          TWEAKS_SRC="${GITHUB_WORKSPACE}/kernel_workspace/wild_kernel_patches"
+          [ -d "$TWEAKS_SRC" ] || \
+            git clone --depth=1 https://github.com/WildKernels/kernel_patches.git "$TWEAKS_SRC"
+
+          cd "${GITHUB_WORKSPACE}/kernel_workspace/common"
+
+          APPLIED=""
+          for name in avoid_extra_s2idle_wake_attempts clear_page_16bytes_align reduce_freeze_timeout; do
+            patch_file="${TWEAKS_SRC}/common/${name}.patch"
+            if [ ! -f "$patch_file" ]; then
+              echo "⚠️ ${name}: patch file not found, skipping"
+              continue
+            fi
+            if patch -p1 --dry-run --ignore-whitespace -F 3 < "$patch_file" >/dev/null 2>&1; then
+              patch -p1 --ignore-whitespace -F 3 < "$patch_file"
+              echo "✅ Applied: ${name}"
+              APPLIED="${APPLIED} ${name}"
+            else
+              echo "⚠️ Skipped (does not apply on ${KERNEL_BRANCH:-this branch}): ${name}"
+            fi
+          done
+
+          echo "DURATION_SULTAN=$(($(date +%s) - STEP_START))s" >> "$GITHUB_ENV"
+          echo "Sultan tweaks applied:${APPLIED:- none}"
+
       - name: Add Configuration Settings
         shell: bash
         run: |
@@ -1907,6 +1945,7 @@ jobs:
           | Apply patches | ${DURATION_PATCHES:-N/A} |
           | Apply BBRv3 | ${DURATION_BBR3:-skipped} |
           | Apply ADIOS | ${DURATION_ADIOS:-skipped} |
+          | Apply Sultan tweaks | ${DURATION_SULTAN:-skipped} |
           | Configure kernel | ${DURATION_CONFIGURE:-N/A} |
           | Build kernel | ${DURATION_BUILD_KERNEL:-N/A} |
           | Package ZIP | ${DURATION_PACKAGE_ZIP:-N/A} |
