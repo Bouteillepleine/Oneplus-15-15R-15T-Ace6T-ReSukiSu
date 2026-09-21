@@ -1792,19 +1792,34 @@ jobs:
         if: ${{ inputs.CREATE_RELEASE == true }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ak3-${{ matrix.id }}-${{ env.TKERNEL_VERSION }}-${{ github.run_id }}
+          tag_name: ak3-${{ github.run_id }}
           name: >-
-            ${{ env.DEVICE_NAME }} — ReSukiSU ${{ env.KSUVER }} — SUSFS ${{ env.SUSVER }} — ${{ env.TKERNEL_VERSION }}
+            ReSukiSU ${{ env.KSUVER }} — SUSFS ${{ env.SUSVER }} — build #${{ github.run_number }}
             ${{ inputs.LSM && '[LSM]' || '' }}
             ${{ inputs.SUSFS_META == '-1' && '[noSUSFS]' || '' }}
           body: |
-            ## 📦 ${{ env.DEVICE_NAME }} ReSukiSU Kernel
+            ## 📦 ReSukiSU Kernels
+
+            Every ZIP below is a complete AnyKernel3 package. **Pick the one whose
+            kernel version matches the firmware you are running** — the devices it
+            is flashable on and the kernel version are both in the filename:
+
+            `AK3_ReSukiSU_<ksuver>_<susfs>_<devices>_<kernel>.zip`
+
+            | Kernel | Built from | Flashable on |
+            |---|---|---|
+            | `6.12.23` | `common-android16-6.12-2025-06` | OnePlus 15 / 15T |
+            | `6.12.38` | `common-android16-6.12-2025-09` | OnePlus 15R / Ace 6T |
+            | `6.12.58` | `common-android16-6.12-2025-12` | all supported devices |
+
+            > ⚠️ `6.12.58` is **KMI generation 6**. Firmware still on 6.12.23 or
+            > 6.12.38 ships KMI-5 `vendor_dlkm` modules that will not load against
+            > it. Match the kernel to your firmware.
+            >
+            > Only the kernels actually built by this run are attached below.
+
             | Property | Value |
             |----------|-------|
-            | Device | ${{ env.DEVICE_NAME }} |
-            | Codename | `${{ env.DEVICE_CODENAME }}` |
-            | SoC | `${{ env.CPU }}` |
-            | Kernel | `${{ env.TKERNEL_VERSION }}` |
             | KSU Version | `${{ env.KSUVER }}` |
             | KSU Commit | `${{ env.KSU_COMMIT_SHA }}` |
             | SUSFS Enabled | `${{ inputs.SUSFS_META != '-1' && 'Yes' || 'No' }}` |
@@ -1813,13 +1828,13 @@ jobs:
             | SUSFS Branch | `${{ env.SUSFS_BRANCH_NAME }}` |
             | SUSFS Commit | `${{ env.SUSFS_COMMIT_SHA }}` |
             | SUSFS Short Commit | `${{ env.SUSFS_SHORT_SHA }}` |
-            | Branch | `common-${{ env.KERNEL_BRANCH }}` |
-            | Build threads | `${{ env.BUILD_THREADS || 'Auto' }}` |
             | Build run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+
             ### Features
             - BBR + ECN: `${{ inputs.BBR_ECN }}`
             - BBRv3: `${{ inputs.BBR3 }}`
             - ADIOS I/O scheduler: `${{ inputs.ADIOS }}`
+            - Sultan tweaks: `${{ inputs.SULTAN_TWEAKS }}`
             - Netfilter / IPSet: `${{ inputs.NETFILTER }}`
             - Baseband Guard: `${{ inputs.LSM }}`
             - Unicode Bypass: `${{ inputs.UNICODE_BYPASS }}`
@@ -1927,7 +1942,7 @@ jobs:
           BUILD_SYSTEM_TEXT="${BUILD_SYSTEM_USED:-Unknown}"
 
           if [ "${{ inputs.CREATE_RELEASE }}" = "true" ]; then
-            RELEASE_CELL="[⬇️ Download](https://github.com/${{ github.repository }}/releases/tag/ak3-${{ matrix.id }}-${{ env.TKERNEL_VERSION }}-${{ github.run_id }})"
+            RELEASE_CELL="[⬇️ Download](https://github.com/${{ github.repository }}/releases/tag/ak3-${{ github.run_id }})"
           else
             RELEASE_CELL="📎 Artifact only"
           fi
