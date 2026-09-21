@@ -162,7 +162,7 @@ jobs:
             # built twice because firmware older than the Sept-2026 OTA is on 6.12.23
             # while newer is on 6.12.58; the ZIP name carries TKERNEL_VERSION so the
             # two do not collide.
-            MATRIX='{"include":[{"id":"oneplus15","name":"OnePlus 15 / 15T (6.12.23)","codename":"Infinity","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15-15T"},{"id":"oneplus15","name":"OnePlus 15 / 15T (6.12.58)","codename":"Infinity","cpu":"sm8850","branch":"android16-6.12-2025-12","safe_name":"OnePlus15-15T"},{"id":"oneplus15r","name":"OnePlus 15R / Ace 6T (6.12.38)","codename":"macan","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"OnePlus15R-Ace6T"},{"id":"oneplus15r","name":"OnePlus 15R / Ace 6T (6.12.58)","codename":"macan","cpu":"sm8845","branch":"android16-6.12-2025-12","safe_name":"OnePlus15R-Ace6T"},{"id":"pad4","name":"OnePlus Pad 3 Pro / Pad 4 (6.12.58)","codename":"canoe","cpu":"sm8850","branch":"android16-6.12-2025-12","safe_name":"OnePlusPad3Pro-Pad4"}]}'
+            MATRIX='{"include":[{"id":"oneplus15","name":"OnePlus 15 / 15T (6.12.23)","codename":"Infinity","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15-15T"},{"id":"oneplus15r","name":"OnePlus 15R / Ace 6T (6.12.38)","codename":"macan","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"OnePlus15R-Ace6T"},{"id":"oneplus15","name":"All devices (6.12.58)","codename":"Infinity / macan / canoe","cpu":"sm8850","branch":"android16-6.12-2025-12","safe_name":"OnePlus15-15T-15R-Ace6T-Pads"}]}'
           else
             case "${{ inputs.DEVICE }}" in
               oneplus15)
@@ -634,12 +634,7 @@ jobs:
             case "${KERNEL_BRANCH:-}" in
               android16-6.12-2025-06) STOCK_SUFFIX="5-gb2a876903b49-ab14541642-4k" ;;
               android16-6.12-2025-09) STOCK_SUFFIX="5-g844001fb8721-ab14552068-4k" ;;
-              android16-6.12-2025-12)
-                case "${DEVICE_ID:-}" in
-                  pad4|pad3pro)     STOCK_SUFFIX="6-g7704a1ae279b-ab15213644-4k" ;;
-                  *)                STOCK_SUFFIX="6-g925a103d123c-ab15898589-4k" ;;
-                esac
-                ;;
+              android16-6.12-2025-12) STOCK_SUFFIX="6-g925a103d123c-ab15898589-4k" ;;
               *) STOCK_SUFFIX="" ;;
             esac
 
