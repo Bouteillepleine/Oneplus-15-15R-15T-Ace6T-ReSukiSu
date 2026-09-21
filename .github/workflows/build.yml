@@ -144,7 +144,7 @@ concurrency:
 jobs:
   prepare-matrix:
     name: 🎯 Prepare Build Matrix
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
 
@@ -200,7 +200,7 @@ jobs:
       ${{ inputs.SUSFS_META == '-1' && '[noSUSFS]' || '' }}
 
     needs: prepare-matrix
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 150
 
     strategy:
@@ -229,7 +229,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set Matrix Variables
         shell: bash
@@ -1493,7 +1493,7 @@ jobs:
           fi
 
       - name: Restore Bazel disk cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cache/bazel-disk
@@ -1790,7 +1790,7 @@ jobs:
       
       - name: Upload AK3 ZIP to GitHub Release
         if: ${{ inputs.CREATE_RELEASE == true }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ak3-${{ github.run_id }}
           name: >-

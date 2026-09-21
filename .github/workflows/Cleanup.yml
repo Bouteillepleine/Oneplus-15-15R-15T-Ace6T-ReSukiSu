@@ -59,11 +59,11 @@ permissions:
 jobs:
   cleanup:
     name: 🧹 Cleanup ${{ inputs.CLEANUP_TYPE }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 🔍 Analyze Current Cleanup Plan
         id: analyze
@@ -85,7 +85,7 @@ jobs:
       - name: 🗑️ Clean Actions Caches
         id: clean_caches
         if: ${{ inputs.CLEANUP_TYPE == 'all' || inputs.CLEANUP_TYPE == 'caches' || inputs.CLEANUP_TYPE == 'ccache' || inputs.CLEANUP_TYPE == 'bazel' || inputs.CLEANUP_TYPE == 'gki-sources' || inputs.CLEANUP_TYPE == 'clang-toolchain' }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const dryRun = '${{ inputs.DRY_RUN }}' === 'true';
@@ -180,7 +180,7 @@ jobs:
       - name: 🗑️ Clean Build Artifacts
         id: clean_artifacts
         if: ${{ inputs.CLEANUP_TYPE == 'all' || inputs.CLEANUP_TYPE == 'artifacts' }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const dryRun = '${{ inputs.DRY_RUN }}' === 'true';
@@ -251,7 +251,7 @@ jobs:
       - name: 🗑️ Clean Old Workflow Runs
         id: clean_runs
         if: ${{ inputs.CLEANUP_TYPE == 'all' || inputs.CLEANUP_TYPE == 'old-runs' }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const dryRun = '${{ inputs.DRY_RUN }}' === 'true';
@@ -319,7 +319,7 @@ jobs:
       - name: 🗑️ Clean Old AK3 Releases
         id: clean_releases
         if: ${{ inputs.CLEANUP_TYPE == 'all' || inputs.CLEANUP_TYPE == 'releases' }}
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const dryRun = '${{ inputs.DRY_RUN }}' === 'true';
