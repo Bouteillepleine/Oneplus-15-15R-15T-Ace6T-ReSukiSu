@@ -162,7 +162,7 @@ jobs:
             # built twice because firmware older than the Sept-2026 OTA is on 6.12.23
             # while newer is on 6.12.58; the ZIP name carries TKERNEL_VERSION so the
             # two do not collide.
-            MATRIX='{"include":[{"id":"oneplus15","name":"OnePlus 15 / 15T (6.12.23)","codename":"Infinity","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15-15T"},{"id":"oneplus15","name":"OnePlus 15 / 15T (6.12.58)","codename":"Infinity","cpu":"sm8850","branch":"android16-6.12-2025-12","safe_name":"OnePlus15-15T"},{"id":"oneplus15r","name":"OnePlus 15R / Ace 6T (6.12.38)","codename":"Infinity","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"OnePlus15R-Ace6T"},{"id":"pad4","name":"OnePlus Pad 3 Pro / Pad 4 (6.12.58)","codename":"canoe","cpu":"sm8850","branch":"android16-6.12-2025-12","safe_name":"OnePlusPad3Pro-Pad4"}]}'
+            MATRIX='{"include":[{"id":"oneplus15","name":"OnePlus 15 / 15T (6.12.23)","codename":"Infinity","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15-15T"},{"id":"oneplus15","name":"OnePlus 15 / 15T (6.12.58)","codename":"Infinity","cpu":"sm8850","branch":"android16-6.12-2025-12","safe_name":"OnePlus15-15T"},{"id":"oneplus15r","name":"OnePlus 15R / Ace 6T (6.12.38)","codename":"macan","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"OnePlus15R-Ace6T"},{"id":"oneplus15r","name":"OnePlus 15R / Ace 6T (6.12.58)","codename":"macan","cpu":"sm8845","branch":"android16-6.12-2025-12","safe_name":"OnePlus15R-Ace6T"},{"id":"pad4","name":"OnePlus Pad 3 Pro / Pad 4 (6.12.58)","codename":"canoe","cpu":"sm8850","branch":"android16-6.12-2025-12","safe_name":"OnePlusPad3Pro-Pad4"}]}'
           else
             case "${{ inputs.DEVICE }}" in
               oneplus15)
@@ -172,10 +172,10 @@ jobs:
                 MATRIX='{"include":[{"id":"oneplus15t","name":"OnePlus 15T","codename":"Infinity","cpu":"sm8850","branch":"android16-6.12-2025-06","safe_name":"OnePlus15T"}]}'
                 ;;
               oneplus15r)
-                MATRIX='{"include":[{"id":"oneplus15r","name":"OnePlus 15R","codename":"Infinity","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"OnePlus15R"}]}'
+                MATRIX='{"include":[{"id":"oneplus15r","name":"OnePlus 15R","codename":"macan","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"OnePlus15R"}]}'
                 ;;
               ace6t)
-                MATRIX='{"include":[{"id":"ace6t","name":"OnePlus Ace 6T","codename":"Infinity","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"Ace6T"}]}'
+                MATRIX='{"include":[{"id":"ace6t","name":"OnePlus Ace 6T","codename":"macan","cpu":"sm8845","branch":"android16-6.12-2025-09","safe_name":"Ace6T"}]}'
                 ;;
               pad3pro)
                 MATRIX='{"include":[{"id":"pad3pro","name":"OnePlus Pad 3 Pro","codename":"canoe","cpu":"sm8850","branch":"android16-6.12-2025-12","safe_name":"OnePlusPad3Pro"}]}'
@@ -637,7 +637,6 @@ jobs:
               android16-6.12-2025-12)
                 case "${DEVICE_ID:-}" in
                   pad4|pad3pro)     STOCK_SUFFIX="6-g7704a1ae279b-ab15213644-4k" ;;
-                  oneplus15r|ace6t) STOCK_SUFFIX="" ;;
                   *)                STOCK_SUFFIX="6-g925a103d123c-ab15898589-4k" ;;
                 esac
                 ;;
