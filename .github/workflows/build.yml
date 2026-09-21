@@ -1848,7 +1848,7 @@ jobs:
         if: ${{ inputs.CREATE_RELEASE != true }}
         uses: actions/upload-artifact@v7
         with:
-          name: artifact-${{ matrix.id }}-${{ github.run_id }}
+          name: artifact-${{ matrix.id }}-${{ env.TKERNEL_VERSION }}-${{ github.run_id }}
           path: ${{ env.ZIP_NAME }}
           retention-days: 30
           if-no-files-found: error
