@@ -1497,12 +1497,24 @@ jobs:
             exit 1
           fi
 
+      - name: Restore Bazel disk cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/bazel-disk
+            ~/.cache/bazel-repo
+          key: bazel-${{ runner.os }}-${{ env.KERNEL_BRANCH }}-${{ github.run_id }}
+          restore-keys: |
+            bazel-${{ runner.os }}-${{ env.KERNEL_BRANCH }}-
+
       - name: Build Kernel
         shell: bash
         run: |
           set -euo pipefail
 
           STEP_START=$(date +%s)
+
+          mkdir -p ~/.cache/bazel-disk ~/.cache/bazel-repo
 
           cd kernel_workspace
 
@@ -1556,6 +1568,8 @@ jobs:
             BAZEL_ARGS=(
               --config=fast
               --jobs="${BUILD_THREADS}"
+              --disk_cache="${HOME}/.cache/bazel-disk"
+              --repository_cache="${HOME}/.cache/bazel-repo"
               --show_progress
               --show_progress_rate_limit=10
               --show_result=20
@@ -1590,6 +1604,32 @@ jobs:
 
           echo "✅ Kernel build completed at $(date)"
           echo "DURATION_BUILD_KERNEL=$(($(date +%s) - STEP_START))s" >> "$GITHUB_ENV"
+
+      - name: Trim Bazel disk cache
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CACHE_DIR="${HOME}/.cache/bazel-disk"
+          LIMIT_MB=3500
+
+          [ -d "$CACHE_DIR" ] || exit 0
+
+          SIZE_MB=$(du -sm "$CACHE_DIR" 2>/dev/null | cut -f1)
+          echo "Bazel disk cache: ${SIZE_MB} MiB (limit ${LIMIT_MB} MiB)"
+
+          if [ "${SIZE_MB:-0}" -gt "$LIMIT_MB" ]; then
+            find "$CACHE_DIR" -type f -printf '%T@ %s %p\n' 2>/dev/null \
+              | sort -n -k1,1 \
+              | awk -v limit=$((LIMIT_MB * 1024 * 1024)) -v total="$((SIZE_MB * 1024 * 1024))" '
+                  { if (total <= limit) exit; total -= $2; $1=""; $2=""; sub(/^  /,""); print }
+                ' \
+              | while IFS= read -r f; do rm -f "$f"; done
+            echo "Trimmed to $(du -sm "$CACHE_DIR" 2>/dev/null | cut -f1) MiB"
+          fi
+
+          echo "BAZEL_CACHE_MB=$(du -sm "$CACHE_DIR" 2>/dev/null | cut -f1)" >> "$GITHUB_ENV"
 
       - name: Make AnyKernel3
         shell: bash
