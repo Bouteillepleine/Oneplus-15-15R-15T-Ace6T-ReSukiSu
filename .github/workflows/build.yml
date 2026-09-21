@@ -56,6 +56,17 @@ on:
         required: false
         default: ""
 
+      GKI_RELEASE:
+        type: choice
+        description: "🧬 GKI release branch: auto = per-device default | 2025-12 = 6.12.58 android16-6"
+        required: true
+        default: auto
+        options:
+          - auto
+          - android16-6.12-2025-06
+          - android16-6.12-2025-09
+          - android16-6.12-2025-12
+
       LSM:
         type: boolean
         description: "🛡️ Enable Baseband Guard"
@@ -205,6 +216,7 @@ jobs:
       BUILD_TIME: ${{ inputs.BUILD_TIME }}
       SUFFIX: ${{ inputs.SUFFIX }}
       SUBLEVEL: ${{ inputs.SUBLEVEL }}
+      GKI_RELEASE: ${{ inputs.GKI_RELEASE }}
 
     steps:
       - name: Checkout
@@ -215,12 +227,18 @@ jobs:
         run: |
           set -euo pipefail
 
+          KERNEL_BRANCH="${{ matrix.branch }}"
+          if [ "$GKI_RELEASE" != "auto" ]; then
+            echo "🧬 GKI release override: ${KERNEL_BRANCH} -> ${GKI_RELEASE}"
+            KERNEL_BRANCH="$GKI_RELEASE"
+          fi
+
           {
             echo "DEVICE_ID=${{ matrix.id }}"
             echo "DEVICE_NAME=${{ matrix.name }}"
             echo "DEVICE_CODENAME=${{ matrix.codename }}"
             echo "CPU=${{ matrix.cpu }}"
-            echo "KERNEL_BRANCH=${{ matrix.branch }}"
+            echo "KERNEL_BRANCH=${KERNEL_BRANCH}"
             echo "DEVICE_NAME_SAFE=${{ matrix.safe_name }}"
           } >> "$GITHUB_ENV"
 
@@ -228,7 +246,7 @@ jobs:
           echo "  Device: ${{ matrix.name }}"
           echo "  Codename: ${{ matrix.codename }}"
           echo "  CPU: ${{ matrix.cpu }}"
-          echo "  Branch: common-${{ matrix.branch }}"
+          echo "  Branch: common-${KERNEL_BRANCH}"
           echo "  Safe name: ${{ matrix.safe_name }}"
 
       - name: Record Build Start Time
