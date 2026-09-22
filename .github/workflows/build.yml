@@ -87,7 +87,7 @@ on:
 
       BBR3:
         type: boolean
-        description: "🚀 Backport BBRv3 (patches net/tcp — KMI-safe build for android16-6.12)"
+        description: "🚀 Backport BBRv3 (patches net/tcp — KMI-safe)"
         required: true
         default: true
 
@@ -99,7 +99,7 @@ on:
 
       SULTAN_TWEAKS:
         type: boolean
-        description: "🍃 Sultan-derived power/memory tweaks (WildKernels patches, dry-run checked)"
+        description: "🍃 Sultan-derived power/memory tweaks (WildKernels patches)"
         required: true
         default: false
 
