@@ -7,7 +7,7 @@ on:
         type: choice
         description: "📱 Target device (leave 'all' to build all devices in parallel)"
         required: true
-        default: oneplus15
+        default: all
         options:
           - all
           - oneplus15
